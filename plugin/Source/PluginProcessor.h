@@ -1,5 +1,9 @@
 // The plugin wrapper. It talks to Logic, reads the control values and passes them, with the audio,
 // to the engine. It contains no sound-making code.
+//
+// One housekeeping job: a few times a second, on the window thread, it checks whether the engine switched
+// something off by itself (the Rec switch when the reel is full, the Clear Reel button after it has acted)
+// and switches the matching control off too, so the buttons always show the truth.
 
 #pragma once
 
@@ -7,11 +11,11 @@
 #include <phe/Engine.h>
 #include "Parameters.h"
 
-class PhenomeEonProcessor : public juce::AudioProcessor
+class PhenomeEonProcessor : public juce::AudioProcessor, private juce::Timer
 {
 public:
     PhenomeEonProcessor();
-    ~PhenomeEonProcessor() override = default;
+    ~PhenomeEonProcessor() override;
 
     void prepareToPlay (double sampleRate, int samplesPerBlock) override;
     void releaseResources() override {}
@@ -25,7 +29,7 @@ public:
     bool acceptsMidi() const override  { return false; }
     bool producesMidi() const override { return false; }
     bool isMidiEffect() const override { return false; }
-    double getTailLengthSeconds() const override { return 0.0; }   // pass-through for now; the reel will change this
+    double getTailLengthSeconds() const override { return 0.0; }
 
     int getNumPrograms() override { return 1; }
     int getCurrentProgram() override { return 0; }
@@ -36,14 +40,18 @@ public:
     void getStateInformation (juce::MemoryBlock& destData) override;
     void setStateInformation (const void* data, int sizeInBytes) override;
 
-    // For the window: the controls.
+    // For the window: the controls, and a read-only look at the reel (safe to use while audio is running).
     juce::AudioProcessorValueTreeState& getValueTreeState() { return apvts; }
+    const phe::Engine& getEngine() const { return engine; }
 
 private:
     phe::Params readParams() const;
+    void timerCallback() override;
+    void switchOff (const char* parameterId);
 
     juce::AudioProcessorValueTreeState apvts;
     phe::Engine engine;
+    std::atomic<bool> switchTransientButtonsOff { false };     // set when a saved project is loaded
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (PhenomeEonProcessor)
 };

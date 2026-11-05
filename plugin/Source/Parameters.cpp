@@ -13,24 +13,26 @@ static std::unique_ptr<juce::AudioParameterFloat> knob (const char* id, const ch
                                                         defaultValue);
 }
 
-static std::unique_ptr<juce::AudioParameterBool> button (const char* id, const char* name)
+static std::unique_ptr<juce::AudioParameterBool> button (const char* id, const char* name, bool defaultValue = false)
 {
-    return std::make_unique<juce::AudioParameterBool> (juce::ParameterID { id, 1 }, name, false);
+    return std::make_unique<juce::AudioParameterBool> (juce::ParameterID { id, 1 }, name, defaultValue);
 }
 
 juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
 {
     juce::AudioProcessorValueTreeState::ParameterLayout layout;
 
-    // The eight knobs. The starting positions are placeholders; each is set properly when the control gets its sound.
-    layout.add (knob (inputLevel,   "Input Level",    0.5f));
-    layout.add (knob (soundOnSound, "Sound On Sound", 0.5f));
+    // The eight knobs. The starting positions of the ones that do something now (Input Level, Sound On Sound,
+    // Output Level) come from the engine's list, so there is one source for them; the others are placeholders
+    // until they get their sound.
+    layout.add (knob (inputLevel,   "Input Level",    phe::kDefaultInputLevel));
+    layout.add (knob (soundOnSound, "Sound On Sound", phe::kDefaultSoundOnSound));
     layout.add (knob (geneSize,     "Gene-Size",      0.5f));
     layout.add (knob (slide,        "Slide",          0.5f));
     layout.add (knob (variSpeed,    "Vari-Speed",     0.5f));
     layout.add (knob (morph,        "Morph",          0.5f));
     layout.add (knob (organize,     "Organize",       0.5f));
-    layout.add (knob (outputLevel,  "Output Level",   0.5f));
+    layout.add (knob (outputLevel,  "Output Level",   phe::kDefaultOutputLevel));
 
     // Input gain step: -3 / 0 / +6 / +12 dB, starting at 0 dB (the engine's table is the single source of these numbers).
     juce::StringArray gainNames;
@@ -56,7 +58,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
     layout.add (button (recNewSplice,     "Rec New Splice"));
     layout.add (button (splice,           "Splice"));
     layout.add (button (shift,            "Shift"));
-    layout.add (button (play,             "Play"));
+    layout.add (button (play,             "Play", phe::kDefaultPlay));
     layout.add (button (deleteMarker,     "Delete Splice Marker"));
     layout.add (button (deleteAllMarkers, "Delete All Markers"));
     layout.add (button (eraseSplice,      "Erase Splice"));

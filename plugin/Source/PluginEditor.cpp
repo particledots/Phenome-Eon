@@ -110,7 +110,7 @@ void PhenomeEonSliderPanel::paint (juce::Graphics& g)
 
     g.setColour (kMuted);
     g.setFont (font (13.0f));
-    g.drawText ("Plain slider window (the fallback). Audio passes straight through; the controls do not change the sound yet.",
+    g.drawText ("Plain slider window (the fallback). Rec, Play, Sound On Sound, levels and Clear Reel work; the rest not yet.",
                 kLeft, 46, kWidth - 2 * kLeft, 20, juce::Justification::centredLeft);
 
     g.setColour (kAmber);
@@ -195,7 +195,7 @@ void PhenomeEonEditor::showView (View view)
 
     if (view == View::styled)
     {
-        styled = std::make_unique<StyledPanel> (owner.getValueTreeState(), owner, JucePlugin_VersionString);
+        styled = std::make_unique<StyledPanel> (owner.getValueTreeState(), owner, owner.getEngine(), JucePlugin_VersionString);
         styled->setLookAndFeel (&styledLook);
         styled->onSwitchToPlain = [this] { requestView (View::plain); };
         addAndMakeVisible (*styled);

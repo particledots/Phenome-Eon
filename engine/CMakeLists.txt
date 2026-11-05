@@ -1,10 +1,11 @@
 # The PhenomeEon audio engine. Plain C++17, no JUCE, no plugin code.
 # Later plugins (Lubadh-, Iroi-, Mimeophon-style) can reuse this folder.
-#   include/phe/core/   generic, reusable parts (scales now; resampler, windows, file links later)
-#   include/phe/        the reel/gene engine and the list of control values it understands
+#   include/phe/core/   generic, reusable parts (scales, level helpers, waveform picture; resampler, file links later)
+#   include/phe/        the reel (Reel.h), the engine (Engine.h) and the list of control values it understands (Params.h)
 
 add_library(phe_engine STATIC
     src/Engine.cpp
+    src/Reel.cpp
 )
 
 target_include_directories(phe_engine PUBLIC include)

@@ -4,49 +4,51 @@ An original AU / VST3 effect for Logic Pro, inspired by the feel of a Eurorack g
 Make Noise Morphagene). All DSP is our own code; it is not a port or copy of anything, and it is not affiliated
 with Make Noise.
 
-Status: **milestone 3 (styled panel on the empty build; tested in Logic on both Macs, works).**
+Status: **milestone 4 (the reel, Rec, Sound On Sound and basic playback): built and checked automatically; not yet
+tested in Logic.** Milestones 1 to 3 (mockup, empty build, styled panel) were tested in Logic on both Macs and work.
 
-Version 0.3.1 (milestone 3, tested in Logic on both Macs and works; 0.3.0 had text that was too small, enlarged in 0.3.1): the **styled panel**, laid out like the approved mockup,
-on the same **empty build** as 0.2.0. It still loads in Logic as an audio effect and passes the sound straight
-through, untouched. **None of the controls change the sound yet**; each gets its function in a later milestone.
+Version 0.4.0 (milestone 4, **not yet tested in Logic**): the first version that makes sound of its own. Same styled
+panel and the same 21 control ids as 0.3.1. Mono or stereo in, the same out.
 
-- **Styled panel (the window you get when you open the plugin):** the title and reel-file strip, the reel display,
-  the eight knobs in one row, the three menus and the 4-step input gain selector, and the ten buttons, in the
-  approved colours (charcoal, amber, teal) with Space Grotesk and IBM Plex Mono (free open-licence fonts, built in,
-  licence texts in `plugin/Fonts/`).
-  - Knobs: drag up/down to turn, double-click to return to the starting position. Read-outs under the knobs are plain
-    percentages for now; each knob gets its real unit (dB, seconds, speed ...) when it gets its sound.
-  - The reel display shows an **empty reel** (ruler to 2:54, all of it free reel time, status line, audio format).
-    Waveforms, splice markers, gene box and playhead are drawn by the same code but only appear once there is a reel
-    (milestone 4 on).
-  - **Load WAV, Save WAV and Reel folder are shown but greyed out**; they come alive in milestone 9. The dashed
-    Clock box is space kept for the optional clock features (milestone 10).
-  - The buttons are still plain on/off switches (as in 0.2.0); how each one behaves (held, toggled, or click) is decided
-    when it gets its function.
-- **Plain slider window (the fallback):** still there. Press **PLAIN SLIDERS** at the bottom right of the styled panel
-  to switch to it, and **Styled panel** at its top right to switch back. Which one was showing is remembered in the
-  saved project. Both windows use the same 21 control ids, so automation and saved projects behave the same in either.
-- **Window size:** opens at 1080 x 720, resizable from 840 x 560 to 1800 x 1200, shape kept (3:2). The panel is laid out in
-  a fixed 1200 x 800 space (the plain window in 900 x 600) and scaled to fit.
-- **Controls (21, all visible to Logic and automatable):** unchanged from 0.2.0: eight knobs (0 to 1), three menus
-  (Input Gain Step, Pitch Snap, Pitch Scale), ten buttons.
-- **Sound:** mono or stereo in, the same out, bit for bit. No delay (latency 0), no tail.
-- **Names and codes:** shown as "PhenomeEon" under Audio Units > particledots; AU type Effect, manufacturer code `Pdot`,
-  plugin code `Phe1`, bundle id `com.particledots.phenomeeon`.
+- **The reel:** one stereo strip of audio memory, up to **2.9 minutes**, kept at Logic's sample rate. It is in memory only:
+  it is lost when the project closes (saving reels to files is milestone 9). If Logic changes the sample rate, the reel
+  is converted so it keeps its pitch and length.
+- **REC** (a switch): on an **empty reel** the first recording makes the reel; it is as long as the recording (it stops by
+  itself when the reel is full at 2.9 minutes, and the REC button switches itself off). On a reel that **already has
+  audio**, REC records over it, starting at the playhead and going round and round the loop for as long as it is on
+  (the Morphagene's Time Lag Accumulation / Sound On Sound). A take shorter than about a thousandth of a second is thrown away.
+- **SOUND ON SOUND:** one knob that blends the live input with the reel loop, for what you hear *and* what is recorded
+  ("what you hear is what you get"). Fully left: live only. In the middle: live and loop both at full level (so a loop can
+  be layered without fading). Fully right: loop only. The read-out shows live % / loop %. Our own curve; to be tuned by ear.
+- **PLAY** (a switch, starts **on**): the reel loops at normal speed from the start. Turning it off lets the pass in
+  progress finish and then stops; turning it on starts from the beginning. A very short (1.5 ms) fade at the loop point stops it clicking.
+- **INPUT LEVEL / OUTPUT LEVEL:** work in decibels; 0.0 dB (no change) is where they start, minus infinity at the far
+  left, +6 dB at the far right. **INPUT GAIN STEP** (-3 / 0 / +6 / +12 dB) also works (a small piece of milestone 8, because it is one line on the same signal path).
+- **CLEAR REEL:** empties the reel at once. **No undo yet** (Undo comes in milestone 8). The button switches itself back off.
+- **The reel display** now shows the real reel: the recorded length, a waveform picture (left and right), the playhead,
+  a red record head while recording, and a STATE read-out (EMPTY / REC / PLAY / STOP). The whole reel counts as one splice
+  until splice markers arrive in milestone 7.
+- **Not working yet (stored and automatable, but no sound change):** Gene-Size, Slide, Vari-Speed, Morph, Organize, the Pitch
+  Snap and Pitch Scale menus, REC NEW SPLICE, SPLICE, SHIFT and the four delete / undo buttons; Load WAV, Save WAV, Reel folder.
+- **When the buttons act:** Rec, Play and Clear Reel act while Logic is processing audio (playing). Logic does not run
+  effects while stopped, so press Play in Logic, then use the buttons.
+- A project saved while Rec or Clear Reel was on opens with them off, so nothing starts recording or clears by itself.
 
-What has been checked automatically (before any test in Logic): the engine self-test (121 checks); a one-off run on
-Linux that draws both windows to pictures (compared with the approved mockup) and moves every control in both windows,
-checking that each changes exactly one parameter, that all 21 parameters have exactly one control, that host automation
-moves the control, and that the choice of window survives save and reload (108 checks); and the GitHub build (compiles,
-universal Apple Silicon + Intel, ad-hoc signed, `auval`, pluginval).
-Not yet tested: the styled panel in Logic on the M4 Mac mini (macOS Tahoe, Logic 11.2.2) and on the Intel Mac
-(macOS 12.7.8, Logic 10.7.8).
+What has been checked automatically (before any test in Logic): the engine self-test (198 checks: pass-through when
+empty, first recording, exact playback and loop, same sound at every block size, overdub and punch-out, recording round
+the loop, auto-stop when full, Clear Reel, Play on/off, sample-rate change, bad input, waveform picture, mono, random
+control changes), also run under a memory-error checker with no errors; a one-off run on Linux that draws the windows to
+pictures, moves every control in both windows and drives the real plugin code with audio: recording, Clear Reel and Rec
+switching themselves off, a full reel, a project saved with Rec on (120 checks); and the GitHub build.
+Not yet tested: anything in Logic (M4 Mac mini, macOS Tahoe, Logic 11.2.2; Intel Mac, macOS 12.7.8, Logic 10.7.8).
+
+Earlier versions: 0.3.1 styled panel on the empty build (tested on both Macs, works); 0.2.0 empty build with plain sliders (tested, works).
 
 ## Folders
 
 | Folder | What it is |
 |---|---|
-| `engine/` | The audio engine. Plain C++, no plugin code. This is the part reused for later plugins. `engine/include/phe/core/` holds the generic parts (scales so far); the reel and gene engine goes next to it. |
+| `engine/` | The audio engine. Plain C++, no plugin code. This is the part reused for later plugins. `engine/include/phe/core/` holds the generic parts (scales, level helpers, the waveform picture); `Reel.h` and `Engine.h` are the reel and the engine (genes come in milestones 5 to 6). |
 | `plugin/` | The plugin wrapper: what Logic sees, the list of controls, and the windows (styled panel and plain sliders). `plugin/Fonts/` holds the panel fonts and their licences; `plugin/preview/` is an optional tool that draws the panel to pictures and checks the controls (not part of the plugin). |
 | `tools/install/` | The generic installer used by all the "Unofficial" plugins. |
 | `.github/workflows/` | The automatic build. |

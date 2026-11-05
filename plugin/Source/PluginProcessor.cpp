@@ -8,6 +8,41 @@ PhenomeEonProcessor::PhenomeEonProcessor()
                           .withOutput ("Output", juce::AudioChannelSet::stereo(), true)),
       apvts (*this, nullptr, "Parameters", PheParams::createLayout())
 {
+    startTimerHz (20);
+}
+
+PhenomeEonProcessor::~PhenomeEonProcessor()
+{
+    stopTimer();
+}
+
+void PhenomeEonProcessor::switchOff (const char* parameterId)
+{
+    if (auto* p = apvts.getParameter (parameterId))
+    {
+        if (p->getValue() > 0.5f)
+        {
+            p->beginChangeGesture();
+            p->setValueNotifyingHost (0.0f);
+            p->endChangeGesture();
+        }
+    }
+}
+
+void PhenomeEonProcessor::timerCallback()
+{
+    if (engine.takeRecordStopped())
+        switchOff (PheParams::rec);
+
+    if (engine.takeClearHandled())
+        switchOff (PheParams::clearReel);
+
+    // A project saved while Rec or Clear Reel was on must not start recording or clearing when it is opened.
+    if (switchTransientButtonsOff.exchange (false))
+    {
+        switchOff (PheParams::rec);
+        switchOff (PheParams::clearReel);
+    }
 }
 
 void PhenomeEonProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
@@ -87,7 +122,10 @@ void PhenomeEonProcessor::setStateInformation (const void* data, int sizeInBytes
 {
     if (auto xml = getXmlFromBinary (data, sizeInBytes))
         if (xml->hasTagName (apvts.state.getType()))
+        {
             apvts.replaceState (juce::ValueTree::fromXml (*xml));
+            switchTransientButtonsOff.store (true);
+        }
 }
 
 // This is what Logic calls to make the plugin.

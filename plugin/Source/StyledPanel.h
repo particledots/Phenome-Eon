@@ -9,6 +9,7 @@
 #pragma once
 
 #include <juce_audio_processors/juce_audio_processors.h>
+#include <phe/Engine.h>
 #include "PanelLookAndFeel.h"
 #include "Parameters.h"
 
@@ -18,9 +19,9 @@
 
 //==============================================================================
 // The reel display: ruler, two waveform lanes, splice markers, current gene and playhead.
-// Milestone 3 draws the empty reel only (nothing recorded yet): an empty ruler and the whole length hatched as
-// free reel time. The drawing of waveform, markers, gene box and playhead is already here, so the preview tool
-// can compare it with the mockup; milestone 4 onwards feeds it real reel data.
+// Milestone 4 feeds it the real reel (read-only, from the engine): the recorded length, a waveform picture of what
+// is on the reel, the playhead and, while recording, the record head. Splice markers and the gene box are drawn by
+// the same code but only appear in the preview tool's made-up demo until milestones 5 and 7 give them real data.
 class ReelDisplay : public juce::Component
 {
 public:
@@ -33,6 +34,12 @@ public:
     // The audio format shown at the right of the status line (0 = not known yet).
     void setFormat (double sampleRate, int numChannels);
 
+    // Where the reel data comes from (the engine, read-only). Without it the display shows an empty reel.
+    void setSource (const phe::Engine* engine);
+
+    // Looks at the reel again and redraws if anything changed. Called by a timer.
+    void refresh();
+
     // Only the preview tool (not the plugin) turns this on: draws made-up content like the mockup.
     void showDemoContent (bool shouldShow) { demo = shouldShow; repaint(); }
 
@@ -40,6 +47,9 @@ private:
     double sampleRate = 0.0;
     int channels = 0;
     bool demo = false;
+
+    const phe::Engine* engine = nullptr;
+    phe::Engine::ReelView view;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ReelDisplay)
 };
@@ -117,8 +127,10 @@ public:
     static constexpr int kWidth  = 1200;
     static constexpr int kHeight = 800;
 
-    // "processor" is only asked for the audio format (sample rate, channels) shown in the reel display.
-    StyledPanel (juce::AudioProcessorValueTreeState&, juce::AudioProcessor& processor, const juce::String& versionText);
+    // "processor" is asked for the audio format (sample rate, channels) shown in the reel display; "engine" is only
+    // looked at (read-only) to draw the reel.
+    StyledPanel (juce::AudioProcessorValueTreeState&, juce::AudioProcessor& processor, const phe::Engine& engine,
+                 const juce::String& versionText);
     ~StyledPanel() override;
 
     void paint (juce::Graphics&) override;

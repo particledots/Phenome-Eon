@@ -1,4 +1,5 @@
 #include "StyledPanel.h"
+#include <phe/core/Gain.h>
 #include <cmath>
 
 using namespace PheStyle;
@@ -19,6 +20,27 @@ namespace
     juce::String percentText (double value)
     {
         return juce::String (juce::roundToInt (value * 100.0)) + " %";
+    }
+
+    // Input Level and Output Level read-out: decibels (0.0 dB = no change).
+    juce::String levelText (double value)
+    {
+        const float db = phe::dsp::levelKnobToDb ((float) value);
+        if (db <= -100.0f)
+            return "off";
+        return (db > 0.05f ? "+" : "") + juce::String (db, 1) + " dB";
+    }
+
+    // Sound On Sound read-out: how much live input and how much reel loop (percent of full level).
+    juce::String soundOnSoundText (double value)
+    {
+        if (value <= 0.005)
+            return "live only";
+        if (value >= 0.995)
+            return "loop only";
+        float live, loop;
+        phe::dsp::sosGains ((float) value, live, loop);
+        return juce::String (juce::roundToInt (live * 100.0f)) + " / " + juce::String (juce::roundToInt (loop * 100.0f));
     }
 
     // ---- layout, in the fixed 1200 x 800 space (measured from the approved mockup) ----
@@ -42,6 +64,28 @@ void ReelDisplay::setFormat (double newRate, int newChannels)
     }
 }
 
+void ReelDisplay::setSource (const phe::Engine* newEngine)
+{
+    engine = newEngine;
+    view = {};
+    refresh();
+}
+
+void ReelDisplay::refresh()
+{
+    if (engine == nullptr)
+        return;
+
+    const auto now = engine->getReelView();
+    if (now.lengthSamples != view.lengthSamples || now.capacitySamples != view.capacitySamples
+        || ! juce::exactlyEqual (now.sampleRate, view.sampleRate) || now.playPos != view.playPos || now.recPos != view.recPos
+        || now.recording != view.recording || now.playing != view.playing)
+    {
+        view = now;
+        repaint();
+    }
+}
+
 void ReelDisplay::paint (juce::Graphics& g)
 {
     const auto b = getLocalBounds().toFloat();
@@ -50,11 +94,22 @@ void ReelDisplay::paint (juce::Graphics& g)
     const float waveTop = statusH + rulerH;
     auto xFor = [w] (double seconds) { return (float) (seconds / kReelSeconds) * w; };
 
-    // What is shown. In the plugin the reel is empty until milestone 4; the demo is for the preview tool only.
-    const double reelLength = demo ? 100.0 : 0.0;
+    // What is shown: the real reel (read from the engine). The made-up demo is for the preview tool only.
+    // Until splice markers exist (milestone 7) the whole reel is one splice.
+    const double rate = view.sampleRate > 0.0 ? view.sampleRate : sampleRate;
+    const bool haveReel = ! demo && engine != nullptr && view.lengthSamples > 0 && rate > 0.0;
+    const bool recording = ! demo && engine != nullptr && view.recording && rate > 0.0;
+    const double reelLength = demo ? 100.0 : (haveReel ? (double) view.lengthSamples / rate : 0.0);
     const std::vector<double> markers = demo ? std::vector<double> { 22.7, 45.4, 61.9, 78.6 } : std::vector<double>{};
-    const int currentSplice = demo ? 2 : -1;          // 0-based
-    const double playhead = demo ? 52.1 : 0.0;
+    const int currentSplice = demo ? 2 : (haveReel ? 0 : -1);          // 0-based
+    const double playhead = demo ? 52.1 : (haveReel ? (double) view.playPos / rate : 0.0);
+    const double recordHead = recording ? (double) view.recPos / rate : 0.0;
+    const bool showPlayhead = demo || (haveReel && (view.playing || ! recording));
+
+    juce::String state = "EMPTY";
+    juce::Colour stateColour = muted;
+    if (recording)             { state = "REC";  stateColour = recRed; }
+    else if (haveReel)         { state = view.playing ? "PLAY" : "STOP"; stateColour = text; }
 
     g.setColour (well);
     g.fillRoundedRectangle (b, 8.0f);
@@ -69,9 +124,10 @@ void ReelDisplay::paint (juce::Graphics& g)
         struct Item { juce::String label, value; juce::Colour valueColour; };
         const std::vector<Item> items {
             { "REEL",     minutesSeconds (reelLength) + " / " + minutesSeconds (kReelSeconds), text },
-            { "SPLICE",   demo ? "3 / 5" : "-",    amber },
+            { "SPLICE",   demo ? "3 / 5" : (haveReel ? "1 / 1" : "-"),    amber },
             { "GENE",     demo ? "4.5 s" : "-",    amber },
             { "PLAYHEAD", minutesSeconds (playhead) + "." + juce::String ((int) std::floor ((playhead - std::floor (playhead)) * 10.0)), text },
+            { "STATE",    demo ? "PLAY" : state,   demo ? text : stateColour },
         };
 
         const auto labelFont = sans (14.5f, false, 0.10f);
@@ -183,6 +239,39 @@ void ReelDisplay::paint (juce::Graphics& g)
         g.drawRect (gene, 1.5f);
     }
 
+    // The recorded waveform (from the engine's picture of the reel: the loudest value in each slice)
+    if (haveReel)
+    {
+        const auto& reel = engine->getReel();
+        const int perBucket = reel.samplesPerBucket();
+        const int buckets = juce::jmin (phe::core::PeakOverview::kBuckets, (view.lengthSamples + perBucket - 1) / perBucket);
+        const float amplitude = laneH * 0.40f;
+        const float xEnd = xFor (reelLength);
+
+        juce::Path left, right;
+        for (int bucket = 0; bucket < buckets; ++bucket)
+        {
+            const float x0 = xFor ((double) bucket * (double) perBucket / rate);
+            const float x1 = juce::jmin (xEnd, xFor ((double) (bucket + 1) * (double) perBucket / rate));
+            float l, r;
+            reel.peaks.get (bucket, l, r);
+            const float width = juce::jmax (1.0f, x1 - x0);
+            if (l > 1.0e-4f)
+            {
+                const float half = juce::jmax (0.75f, juce::jmin (1.0f, l) * amplitude);
+                left.addRectangle (x0, centreL - half, width, half * 2.0f);
+            }
+            if (r > 1.0e-4f)
+            {
+                const float half = juce::jmax (0.75f, juce::jmin (1.0f, r) * amplitude);
+                right.addRectangle (x0, centreR - half, width, half * 2.0f);
+            }
+        }
+        g.setColour (teal);
+        g.fillPath (left);
+        g.fillPath (right);
+    }
+
     // Free reel time: hatched
     {
         const float x0 = xFor (reelLength);
@@ -210,7 +299,7 @@ void ReelDisplay::paint (juce::Graphics& g)
         for (double m : markers)
             g.drawDashedLine (juce::Line<float> (xFor (m), waveTop, xFor (m), h), dashes, 2, 1.5f);
 
-        if (demo)
+        if (demo || haveReel)
         {
             g.setFont (mono (14.5f));
             for (int i = 0; i <= (int) markers.size(); ++i)
@@ -223,8 +312,16 @@ void ReelDisplay::paint (juce::Graphics& g)
         }
     }
 
+    // Record head (red) while recording
+    if (recording)
+    {
+        const float x = xFor (recordHead);
+        g.setColour (recRed);
+        g.drawLine (x, waveTop, x, h, 2.0f);
+    }
+
     // Playhead
-    if (demo)
+    if (showPlayhead)
     {
         const float x = xFor (playhead);
         g.setColour (juce::Colours::white);
@@ -374,18 +471,23 @@ void KnobCard::paint (juce::Graphics& g)
 }
 
 //==============================================================================
-StyledPanel::StyledPanel (juce::AudioProcessorValueTreeState& s, juce::AudioProcessor& processor, const juce::String& version)
+StyledPanel::StyledPanel (juce::AudioProcessorValueTreeState& s, juce::AudioProcessor& processor, const phe::Engine& engine,
+                          const juce::String& version)
     : state (s), host (processor), versionText (version)
 {
     // ---- the eight knobs, in panel order ----
-    auto& input = addKnob (PheParams::inputLevel, "INPUT LEVEL", KnobCard::Size::small);
-    addKnob (PheParams::soundOnSound, "SOUND ON SOUND", KnobCard::Size::small);
+    auto& input = addKnob (PheParams::inputLevel, "INPUT LEVEL", KnobCard::Size::small, levelText);
+    auto& sos   = addKnob (PheParams::soundOnSound, "SOUND ON SOUND", KnobCard::Size::small, soundOnSoundText);
     addKnob (PheParams::geneSize,     "GENE-SIZE",      KnobCard::Size::small);
     addKnob (PheParams::slide,        "SLIDE",          KnobCard::Size::small);
     auto& vari  = addKnob (PheParams::variSpeed, "VARI-SPEED", KnobCard::Size::large);
     auto& morph = addKnob (PheParams::morph,     "MORPH",      KnobCard::Size::large);
     addKnob (PheParams::organize,    "ORGANIZE",     KnobCard::Size::small);
-    addKnob (PheParams::outputLevel, "OUTPUT LEVEL", KnobCard::Size::small);
+    auto& output = addKnob (PheParams::outputLevel, "OUTPUT LEVEL", KnobCard::Size::small, levelText);
+
+    // Short captions for the knobs that make sound in milestone 4
+    sos.addNote ("live % / loop %\nleft: live only\nright: loop only", { 7, 194, 130, 62 }, juce::Justification::topLeft);
+    output.addNote ("0.0 dB = no change", { 7, 194, 130, 22 }, juce::Justification::topLeft);
 
     // Under Input Level: the 4-step gain selector
     gainSelector = std::make_unique<GainStepSelector> (state, PheParams::inputGain);
@@ -429,11 +531,12 @@ StyledPanel::StyledPanel (juce::AudioProcessorValueTreeState& s, juce::AudioProc
     addAndMakeVisible (plainSliders);
 
     addAndMakeVisible (reel);
+    reel.setSource (&engine);
 
     setSize (kWidth, kHeight);
 
     timerCallback();
-    startTimerHz (2);
+    startTimerHz (20);
 }
 
 StyledPanel::~StyledPanel()
@@ -486,6 +589,8 @@ void StyledPanel::timerCallback()
         shownChannels = channels;
         reel.setFormat (rate, channels);
     }
+
+    reel.refresh();
 }
 
 void StyledPanel::paint (juce::Graphics& g)
@@ -539,7 +644,7 @@ void StyledPanel::paint (juce::Graphics& g)
 
     // Footer
     g.setFont (mono (14.0f));
-    g.drawText ("PhenomeEon v" + versionText + "  -  styled panel  -  the controls do not change the sound yet",
+    g.drawText ("PhenomeEon v" + versionText + "  -  Rec, Play, Sound On Sound, levels, Clear Reel work; the rest not yet",
                 juce::Rectangle<int> (kMargin, 757, 900, 28), juce::Justification::centredLeft, false);
 }
 

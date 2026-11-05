@@ -11,6 +11,7 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
 
+#include <cmath>
 #include <iostream>
 #include <map>
 #include <set>
@@ -78,6 +79,46 @@ namespace
         std::cout << "wrote " << file.getFullPathName() << " (" << image.getWidth() << " x " << image.getHeight() << ")" << std::endl;
     }
 
+
+    // ---- driving the real processor with audio, the way Logic does ----
+    void setParameter (PhenomeEonProcessor& proc, const char* id, float value01)
+    {
+        if (auto* p = proc.getValueTreeState().getParameter (id))
+            p->setValueNotifyingHost (value01);
+    }
+
+    float parameterValue (PhenomeEonProcessor& proc, const char* id)
+    {
+        return proc.getValueTreeState().getParameter (id)->getValue();
+    }
+
+    // Feeds 'numBlocks' blocks of 512 samples. Sound: a 220 Hz tone with a slow swell and a little noise,
+    // so the waveform picture has some shape. 'clock' keeps the sound continuous from call to call.
+    void feed (PhenomeEonProcessor& proc, long long& clock, int numBlocks, float level = 1.0f)
+    {
+        juce::AudioBuffer<float> buffer (2, 512);
+        juce::MidiBuffer midi;
+        juce::Random noise (7);
+        for (int b = 0; b < numBlocks; ++b)
+        {
+            for (int i = 0; i < 512; ++i, ++clock)
+            {
+                const double seconds = (double) clock / 48000.0;
+                const double swell = 0.15 + 0.85 * std::abs (std::sin (juce::MathConstants<double>::pi * seconds / 4.7));
+                const float v = level * (float) (0.7 * swell * std::sin (juce::MathConstants<double>::twoPi * 220.0 * seconds))
+                              + 0.02f * (noise.nextFloat() - 0.5f);
+                buffer.setSample (0, i, v);
+                buffer.setSample (1, i, v * 0.8f);
+            }
+            proc.processBlock (buffer, midi);
+        }
+    }
+
+    void letWindowThreadRun (int milliseconds)
+    {
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (milliseconds);
+    }
+
     // Moves every control in the window that is showing and checks the result.
     void checkControls (PhenomeEonProcessor& proc, PhenomeEonEditor& editor, const juce::String& viewName)
     {
@@ -132,7 +173,7 @@ namespace
             if (! b->getClickingTogglesState())
                 continue;
             ++toggles;
-            moveAndCheck ("button '" + b->getButtonText() + "'", [b] { b->setToggleState (true, juce::sendNotificationSync); });
+            moveAndCheck ("button '" + b->getButtonText() + "'", [b] { b->setToggleState (! b->getToggleState(), juce::sendNotificationSync); });
         }
         expect (toggles == 10, viewName + ": 10 on/off buttons (found " + juce::String (toggles) + ")");
 
@@ -202,6 +243,77 @@ int main (int argc, char** argv)
         PhenomeEonProcessor proc4;
         proc4.setStateInformation (saved3.getData(), (int) saved3.getSize());
         expect (std::abs (proc4.getParameters()[1]->getValue() - 0.8f) < 1.0e-4f, "control values survive save and reload");
+        resetAll (proc);
+    }
+
+
+    // ---------------- recording through the real processor ----------------
+    {
+        resetAll (proc);
+        long long clock = 0;
+        feed (proc, clock, 4);
+
+        // Rec on, ten seconds of sound, Rec off
+        setParameter (proc, PheParams::rec, 1.0f);
+        feed (proc, clock, 938);                                    // 938 blocks of 512 = 480256 samples
+        {
+            PhenomeEonEditor editor (proc);
+            editor.showView (PhenomeEonEditor::View::styled);
+            editor.setSize (1200, 800);
+            letWindowThreadRun (150);
+            std::vector<ReelDisplay*> reels;
+            collect (editor, reels);
+            save (editor, outDir.getChildFile ("styled_while_recording.png"), 1654.0f / 1200.0f);
+        }
+        feed (proc, clock, 1);
+        const int firstLength = proc.getEngine().getReelView().lengthSamples;
+        expect (proc.getEngine().getReelView().recording, "wrapper: recording while Rec is on");
+        setParameter (proc, PheParams::rec, 0.0f);
+        feed (proc, clock, 3);
+        expect (! proc.getEngine().getReelView().recording, "wrapper: stopped when Rec goes off");
+        expect (firstLength == 939 * 512, "wrapper: reel is as long as the recording (" + juce::String (firstLength) + ")");
+        expect (proc.getEngine().getReelView().playing, "wrapper: the new recording loops (Play starts on)");
+
+        // Sound On Sound up: we hear the loop. With silence in, the output is the loop.
+        setParameter (proc, PheParams::soundOnSound, 1.0f);
+        feed (proc, clock, 400);
+        {
+            PhenomeEonEditor editor (proc);
+            editor.showView (PhenomeEonEditor::View::styled);
+            editor.setSize (1200, 800);
+            letWindowThreadRun (150);
+            save (editor, outDir.getChildFile ("styled_recorded_reel.png"), 1654.0f / 1200.0f);
+        }
+
+        // Clear Reel: acts, then the wrapper switches the button back off by itself
+        setParameter (proc, PheParams::clearReel, 1.0f);
+        feed (proc, clock, 2);
+        letWindowThreadRun (200);
+        expect (proc.getEngine().getReelView().lengthSamples == 0, "wrapper: Clear Reel empties the reel");
+        expect (parameterValue (proc, PheParams::clearReel) < 0.5f, "wrapper: the Clear Reel button switches itself off");
+
+        // A project saved while Rec was on must not start recording when opened
+        setParameter (proc, PheParams::rec, 1.0f);
+        juce::MemoryBlock whileRecOn;
+        proc.getStateInformation (whileRecOn);
+        setParameter (proc, PheParams::rec, 0.0f);
+        PhenomeEonProcessor reopened;
+        reopened.setPlayConfigDetails (2, 2, 48000.0, 512);
+        reopened.prepareToPlay (48000.0, 512);
+        reopened.setStateInformation (whileRecOn.getData(), (int) whileRecOn.getSize());
+        letWindowThreadRun (200);
+        expect (parameterValue (reopened, PheParams::rec) < 0.5f, "wrapper: a project saved with Rec on opens with Rec off");
+
+        // Recording until the reel is full: stops by itself and the Rec button goes off
+        setParameter (proc, PheParams::rec, 1.0f);
+        feed (proc, clock, 16400);                                  // 8,396,800 samples: more than the 8,352,000 the reel holds
+        letWindowThreadRun (200);
+        expect (proc.getEngine().getReelView().lengthSamples == proc.getEngine().getReelView().capacitySamples,
+                "wrapper: a full reel is 2.9 minutes");
+        expect (parameterValue (proc, PheParams::rec) < 0.5f, "wrapper: the Rec button switches itself off when the reel is full");
+        setParameter (proc, PheParams::clearReel, 1.0f);
+        feed (proc, clock, 2);
+        letWindowThreadRun (200);
         resetAll (proc);
     }
 
