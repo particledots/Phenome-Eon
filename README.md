@@ -4,9 +4,9 @@ An original AU / VST3 effect for Logic Pro, inspired by the feel of a Eurorack g
 Make Noise Morphagene). All DSP is our own code; it is not a port or copy of anything, and it is not affiliated
 with Make Noise.
 
-Status: **milestone 3 (styled panel on the empty build; waiting for a test in Logic).**
+Status: **milestone 3 (styled panel on the empty build; tested in Logic on both Macs, works).**
 
-Version 0.3.1 (milestone 3, waiting for a re-test in Logic; 0.3.0 tested OK except that small text was too small, now enlarged): the **styled panel**, laid out like the approved mockup,
+Version 0.3.1 (milestone 3, tested in Logic on both Macs and works; 0.3.0 had text that was too small, enlarged in 0.3.1): the **styled panel**, laid out like the approved mockup,
 on the same **empty build** as 0.2.0. It still loads in Logic as an audio effect and passes the sound straight
 through, untouched. **None of the controls change the sound yet**; each gets its function in a later milestone.
 
