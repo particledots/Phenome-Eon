@@ -6,7 +6,7 @@ with Make Noise.
 
 Status: **milestone 3 (styled panel on the empty build; waiting for a test in Logic).**
 
-Version 0.3.0 (milestone 3, waiting for a test in Logic): the **styled panel**, laid out like the approved mockup,
+Version 0.3.1 (milestone 3, waiting for a re-test in Logic; 0.3.0 tested OK except that small text was too small, now enlarged): the **styled panel**, laid out like the approved mockup,
 on the same **empty build** as 0.2.0. It still loads in Logic as an audio effect and passes the sound straight
 through, untouched. **None of the controls change the sound yet**; each gets its function in a later milestone.
 
@@ -26,7 +26,7 @@ through, untouched. **None of the controls change the sound yet**; each gets its
 - **Plain slider window (the fallback):** still there. Press **PLAIN SLIDERS** at the bottom right of the styled panel
   to switch to it, and **Styled panel** at its top right to switch back. Which one was showing is remembered in the
   saved project. Both windows use the same 21 control ids, so automation and saved projects behave the same in either.
-- **Window size:** opens at 960 x 640, resizable from 720 x 480 to 1800 x 1200, shape kept (3:2). The panel is laid out in
+- **Window size:** opens at 1080 x 720, resizable from 840 x 560 to 1800 x 1200, shape kept (3:2). The panel is laid out in
   a fixed 1200 x 800 space (the plain window in 900 x 600) and scaled to fit.
 - **Controls (21, all visible to Logic and automatable):** unchanged from 0.2.0: eight knobs (0 to 1), three menus
   (Input Gain Step, Pitch Snap, Pitch Scale), ten buttons.

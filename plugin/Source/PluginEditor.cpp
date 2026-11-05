@@ -155,9 +155,9 @@ void PhenomeEonSliderPanel::resized()
 //==============================================================================
 namespace
 {
-    // Window size in Logic: opens at 80%, can be made 60% to 150% of the panel's natural size (3:2 shape kept).
-    constexpr int kOpenWidth = 960,  kOpenHeight = 640;
-    constexpr int kMinWidth  = 720,  kMinHeight  = 480;
+    // Window size in Logic: opens at 90%, can be made 70% to 150% of the panel's natural size (3:2 shape kept).
+    constexpr int kOpenWidth = 1080, kOpenHeight = 720;
+    constexpr int kMinWidth  = 840,  kMinHeight  = 560;
     constexpr int kMaxWidth  = 1800, kMaxHeight  = 1200;
 
     // Remembered in the saved project (not a control, so it does not touch automation): which window was showing.

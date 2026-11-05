@@ -166,7 +166,7 @@ int main (int argc, char** argv)
     // ---------------- control checks, both windows ----------------
     {
         PhenomeEonEditor editor (proc);
-        editor.setSize (960, 640);
+        editor.setSize (1080, 720);
 
         expect (editor.getView() == PhenomeEonEditor::View::styled, "opens on the styled panel by default");
         checkControls (proc, editor, "styled");
@@ -235,11 +235,15 @@ int main (int argc, char** argv)
 
         save (editor, outDir.getChildFile ("styled_empty_as_plugin.png"), 1654.0f / 1200.0f);
 
+        editor.setSize (1080, 720);      // the size the plugin opens at
+        save (editor, outDir.getChildFile ("styled_default_window.png"), 1.0f);
+        editor.setSize (1200, 800);
+
         for (auto* r : reels)
             r->showDemoContent (true);
         save (editor, outDir.getChildFile ("styled_with_demo_reel.png"), 1654.0f / 1200.0f);
 
-        editor.setSize (720, 480);
+        editor.setSize (840, 560);
         save (editor, outDir.getChildFile ("styled_smallest_window.png"), 1.0f);
 
         editor.showView (PhenomeEonEditor::View::plain);

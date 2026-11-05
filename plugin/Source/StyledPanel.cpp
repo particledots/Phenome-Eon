@@ -46,7 +46,7 @@ void ReelDisplay::paint (juce::Graphics& g)
 {
     const auto b = getLocalBounds().toFloat();
     const float w = b.getWidth(), h = b.getHeight();
-    constexpr float statusH = 29.0f, rulerH = 21.0f, numbersH = 20.0f;
+    constexpr float statusH = 34.0f, rulerH = 25.0f, numbersH = 22.0f;
     const float waveTop = statusH + rulerH;
     auto xFor = [w] (double seconds) { return (float) (seconds / kReelSeconds) * w; };
 
@@ -74,8 +74,8 @@ void ReelDisplay::paint (juce::Graphics& g)
             { "PLAYHEAD", minutesSeconds (playhead) + "." + juce::String ((int) std::floor ((playhead - std::floor (playhead)) * 10.0)), text },
         };
 
-        const auto labelFont = sans (12.0f, false, 0.12f);
-        const auto valueFont = mono (13.5f);
+        const auto labelFont = sans (14.5f, false, 0.10f);
+        const auto valueFont = mono (16.5f);
         float x = 14.0f;
         for (auto& item : items)
         {
@@ -83,13 +83,13 @@ void ReelDisplay::paint (juce::Graphics& g)
             g.setColour (muted);
             const float lw = textWidth (labelFont, item.label);
             g.drawText (item.label, juce::Rectangle<float> (x, 0.0f, lw + 2.0f, statusH), juce::Justification::centredLeft, false);
-            x += lw + 11.0f;
+            x += lw + 12.0f;
 
             g.setFont (valueFont);
             g.setColour (item.valueColour);
             const float vw = textWidth (valueFont, item.value);
             g.drawText (item.value, juce::Rectangle<float> (x, 0.0f, vw + 2.0f, statusH), juce::Justification::centredLeft, false);
-            x += vw + 34.0f;
+            x += vw + 36.0f;
         }
 
         juce::String format;
@@ -99,7 +99,7 @@ void ReelDisplay::paint (juce::Graphics& g)
             const bool whole = std::abs (kHz - std::round (kHz)) < 0.001;
             format = (channels == 1 ? "mono" : "stereo") + juce::String (", ") + (whole ? juce::String ((int) std::round (kHz)) : juce::String (kHz, 1)) + " kHz";
         }
-        g.setFont (mono (12.5f));
+        g.setFont (mono (15.0f));
         g.setColour (muted);
         g.drawText (format, juce::Rectangle<float> (w - 300.0f, 0.0f, 282.0f, statusH), juce::Justification::centredRight, false);
     }
@@ -109,18 +109,18 @@ void ReelDisplay::paint (juce::Graphics& g)
 
     // ---- ruler ----
     {
-        g.setFont (mono (11.5f));
+        g.setFont (mono (14.5f));
         for (int sec = 0; sec <= 150; sec += 30)
         {
             const float x = xFor (sec);
             g.setColour (muted.withAlpha (0.7f));
             g.drawVerticalLine ((int) std::round (x), waveTop - 7.0f, waveTop);
             g.setColour (muted);
-            g.drawText (minutesSeconds (sec), juce::Rectangle<float> (x + 5.0f, statusH + 1.0f, 50.0f, rulerH - 3.0f),
+            g.drawText (minutesSeconds (sec), juce::Rectangle<float> (x + 5.0f, statusH + 1.0f, 60.0f, rulerH - 3.0f),
                         juce::Justification::centredLeft, false);
         }
         g.setColour (muted);
-        g.drawText (minutesSeconds (kReelSeconds), juce::Rectangle<float> (w - 56.0f, statusH + 1.0f, 50.0f, rulerH - 3.0f),
+        g.drawText (minutesSeconds (kReelSeconds), juce::Rectangle<float> (w - 66.0f, statusH + 1.0f, 60.0f, rulerH - 3.0f),
                     juce::Justification::centredRight, false);
     }
 
@@ -145,10 +145,10 @@ void ReelDisplay::paint (juce::Graphics& g)
     g.setColour (juce::Colours::white.withAlpha (0.06f));
     g.drawHorizontalLine ((int) centreL, 0.0f, xFor (reelLength));
     g.drawHorizontalLine ((int) centreR, 0.0f, xFor (reelLength));
-    g.setFont (sans (11.0f, true, 0.1f));
+    g.setFont (sans (14.0f, true, 0.1f));
     g.setColour (muted);
-    g.drawText ("L", juce::Rectangle<float> (6.0f, waveTop + 4.0f, 14.0f, 14.0f), juce::Justification::centredLeft, false);
-    g.drawText ("R", juce::Rectangle<float> (6.0f, waveTop + laneH + 4.0f, 14.0f, 14.0f), juce::Justification::centredLeft, false);
+    g.drawText ("L", juce::Rectangle<float> (6.0f, waveTop + 4.0f, 18.0f, 18.0f), juce::Justification::centredLeft, false);
+    g.drawText ("R", juce::Rectangle<float> (6.0f, waveTop + laneH + 4.0f, 18.0f, 18.0f), juce::Justification::centredLeft, false);
 
     if (demo)
     {
@@ -197,7 +197,7 @@ void ReelDisplay::paint (juce::Graphics& g)
 
         if (free.getWidth() > 140.0f)
         {
-            g.setFont (mono (12.5f));
+            g.setFont (mono (15.0f));
             g.setColour (muted);
             g.drawText ("free reel time", free.withTrimmedBottom (numbersH), juce::Justification::centred, false);
         }
@@ -212,7 +212,7 @@ void ReelDisplay::paint (juce::Graphics& g)
 
         if (demo)
         {
-            g.setFont (mono (11.5f));
+            g.setFont (mono (14.5f));
             for (int i = 0; i <= (int) markers.size(); ++i)
             {
                 const float x0 = xFor (spliceStart (i)), x1 = xFor (spliceEnd (i));
@@ -260,7 +260,7 @@ GainStepSelector::GainStepSelector (juce::AudioProcessorValueTreeState& state, c
 
 juce::Rectangle<float> GainStepSelector::segment (int index) const
 {
-    const float gap = 4.0f;
+    const float gap = 3.0f;
     const int n = juce::jmax (1, labels.size());
     const float segW = ((float) getWidth() - gap * (float) (n - 1)) / (float) n;
     return { (segW + gap) * (float) index, 0.0f, segW, (float) getHeight() };
@@ -285,7 +285,7 @@ void GainStepSelector::paint (juce::Graphics& g)
         g.setColour (on ? amber.brighter (0.3f) : controlEdge);
         g.drawRoundedRectangle (r.reduced (0.5f), 5.0f, 1.0f);
         g.setColour (on ? background : text);
-        g.setFont (sans (13.5f, true));
+        g.setFont (sans (14.5f, true));
         g.drawText (labels[i], r, juce::Justification::centred, false);
     }
 }
@@ -360,15 +360,15 @@ void KnobCard::paint (juce::Graphics& g)
     g.drawRoundedRectangle (b, 8.0f, 1.0f);
 
     g.setColour (text);
-    g.setFont (sans (15.0f, true, 0.07f));
+    g.setFont (sans (16.0f, true, 0.06f));
     g.drawText (title, juce::Rectangle<int> (0, 9, getWidth(), 22), juce::Justification::centred, false);
 
     g.setColour (amber);
-    g.setFont (mono (16.5f));
+    g.setFont (mono (18.0f));
     g.drawText (format (slider.getValue()), juce::Rectangle<int> (0, 163, getWidth(), 24), juce::Justification::centred, false);
 
     g.setColour (muted);
-    g.setFont (sans (11.5f, false, 0.06f));
+    g.setFont (sans (13.5f, false, 0.02f));
     for (auto& n : notes)
         g.drawFittedText (n.text, n.area, n.justification, 3, 1.0f);
 }
@@ -390,20 +390,20 @@ StyledPanel::StyledPanel (juce::AudioProcessorValueTreeState& s, juce::AudioProc
     // Under Input Level: the 4-step gain selector
     gainSelector = std::make_unique<GainStepSelector> (state, PheParams::inputGain);
     controlIds.push_back (PheParams::inputGain);
-    input.addNote ("INPUT GAIN STEP\n(dB)", { 7, 198, 125, 30 }, juce::Justification::topLeft);
+    input.addNote ("INPUT GAIN STEP\n(dB)", { 7, 194, 130, 36 }, juce::Justification::topLeft);
     input.addExtra (*gainSelector, { 6, 233, 127, 31 });
 
     // Under Vari-Speed: Pitch Snap
     auto& snap = makeChoice (PheParams::pitchSnap);
-    vari.addNote ("PITCH SNAP", { 0, 195, kCardWidth, 20 }, juce::Justification::centred);
+    vari.addNote ("PITCH SNAP", { 0, 193, kCardWidth, 22 }, juce::Justification::centred);
     vari.addExtra (snap.box, { 7, 220, 125, 32 });
-    vari.addNote ("Off / Steps / Semitones", { 0, 258, kCardWidth, 16 }, juce::Justification::centred);
+    vari.addNote ("Off / Steps / Semitones", { 0, 256, kCardWidth, 20 }, juce::Justification::centred);
 
     // Under Morph: Pitch Scale
     auto& scale = makeChoice (PheParams::pitchScale);
-    morph.addNote ("PITCH SCALE", { 0, 188, kCardWidth, 20 }, juce::Justification::centred);
+    morph.addNote ("PITCH SCALE", { 0, 186, kCardWidth, 22 }, juce::Justification::centred);
     morph.addExtra (scale.box, { 7, 212, 125, 33 });
-    morph.addNote ("Off + 28 scales (random\npitch-up genes)", { 7, 251, 125, 32 }, juce::Justification::centred);
+    morph.addNote ("Off + 28 scales (random\npitch-up genes)", { 1, 249, 137, 38 }, juce::Justification::centred);
 
     // ---- buttons ----
     addPanelButton (PheParams::rec,              "REC", true);
@@ -497,8 +497,8 @@ void StyledPanel::paint (juce::Graphics& g)
     g.setFont (sans (43.0f, true, -0.01f));
     g.drawText ("PhenomeEon", juce::Rectangle<int> (kMargin, 32, 320, 50), juce::Justification::centredLeft, false);
     g.setColour (muted);
-    g.setFont (sans (13.5f, false, 0.13f));
-    g.drawText ("TAPE-SPLICE & MICROSOUND LOOPER", juce::Rectangle<int> (kMargin, 74, 360, 20), juce::Justification::centredLeft, false);
+    g.setFont (sans (15.0f, false, 0.10f));
+    g.drawText ("TAPE-SPLICE & MICROSOUND LOOPER", juce::Rectangle<int> (kMargin, 73, 400, 22), juce::Justification::centredLeft, false);
 
     // Reel file box
     g.setColour (card);
@@ -506,11 +506,11 @@ void StyledPanel::paint (juce::Graphics& g)
     g.setColour (cardEdge);
     g.drawRoundedRectangle (kReelFileBox.toFloat().reduced (0.5f), 8.0f, 1.0f);
     g.setColour (muted);
-    g.setFont (sans (12.0f, false, 0.12f));
-    g.drawText ("REEL FILE", juce::Rectangle<int> (kReelFileBox.getX() + 14, kReelFileBox.getY(), 80, kReelFileBox.getHeight()),
+    g.setFont (sans (14.5f, false, 0.10f));
+    g.drawText ("REEL FILE", juce::Rectangle<int> (kReelFileBox.getX() + 14, kReelFileBox.getY(), 90, kReelFileBox.getHeight()),
                 juce::Justification::centredLeft, false);
-    g.setFont (mono (12.5f));
-    g.drawText ("not active yet", juce::Rectangle<int> (750, kReelFileBox.getY(), 140, kReelFileBox.getHeight()),
+    g.setFont (mono (15.0f));
+    g.drawText ("not active yet", juce::Rectangle<int> (750, kReelFileBox.getY(), 145, kReelFileBox.getHeight()),
                 juce::Justification::centredLeft, false);
 
     // Clock box (space kept for the optional clock features, milestone 10)
@@ -523,24 +523,24 @@ void StyledPanel::paint (juce::Graphics& g)
         g.setColour (cardEdge.brighter (0.15f));
         g.fillPath (dashed);
         g.setColour (muted);
-        g.setFont (sans (12.0f, false, 0.12f));
-        g.drawText ("CLOCK (LATER)", juce::Rectangle<int> (kClockBox.getX() + 16, kClockBox.getY() + 8, 200, 18), juce::Justification::centredLeft, false);
-        g.setFont (sans (12.5f));
-        g.drawFittedText ("Off by default. Space kept for Logic\ntempo features.",
-                          juce::Rectangle<int> (kClockBox.getX() + 16, kClockBox.getY() + 28, kClockBox.getWidth() - 24, 30),
+        g.setFont (sans (14.5f, false, 0.10f));
+        g.drawText ("CLOCK (LATER)", juce::Rectangle<int> (kClockBox.getX() + 16, kClockBox.getY() + 5, 215, 20), juce::Justification::centredLeft, false);
+        g.setFont (sans (14.5f));
+        g.drawFittedText ("Off by default. Space kept\nfor Logic tempo features.",
+                          juce::Rectangle<int> (kClockBox.getX() + 16, kClockBox.getY() + 25, kClockBox.getWidth() - 20, 36),
                           juce::Justification::topLeft, 2, 1.0f);
     }
 
     // Section labels over the button rows
     g.setColour (muted);
-    g.setFont (sans (12.0f, false, 0.12f));
-    g.drawText ("RECORD & PLAY", juce::Rectangle<int> (kLeftGroupX, 654, 300, 18), juce::Justification::centredLeft, false);
-    g.drawText ("EDIT", juce::Rectangle<int> (kRightGroupX, 654, 300, 18), juce::Justification::centredLeft, false);
+    g.setFont (sans (15.0f, false, 0.10f));
+    g.drawText ("RECORD & PLAY", juce::Rectangle<int> (kLeftGroupX, 652, 300, 22), juce::Justification::centredLeft, false);
+    g.drawText ("EDIT", juce::Rectangle<int> (kRightGroupX, 652, 300, 22), juce::Justification::centredLeft, false);
 
     // Footer
-    g.setFont (mono (11.5f));
+    g.setFont (mono (14.0f));
     g.drawText ("PhenomeEon v" + versionText + "  -  styled panel  -  the controls do not change the sound yet",
-                juce::Rectangle<int> (kMargin, 758, 800, 26), juce::Justification::centredLeft, false);
+                juce::Rectangle<int> (kMargin, 757, 900, 28), juce::Justification::centredLeft, false);
 }
 
 void StyledPanel::resized()
@@ -569,5 +569,5 @@ void StyledPanel::resized()
     saveWav.setBounds (541, by, 88, 35);
     reelFolder.setBounds (642, by, 96, 35);
 
-    plainSliders.setBounds (kWidth - kMargin - 120, 759, 120, 24);
+    plainSliders.setBounds (kWidth - kMargin - 140, 757, 140, 28);
 }

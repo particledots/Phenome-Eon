@@ -151,11 +151,11 @@ juce::Font PanelLookAndFeel::getTextButtonFont (juce::TextButton& b, int)
     // Small buttons (the footer switch) get a smaller font than the big panel buttons.
     // Small buttons (the footer switch) are smaller; buttons with ordinary lower-case text (Load WAV ...) are not bold.
     if (b.getHeight() < 30)
-        return PheStyle::sans (11.5f, true, 0.05f);
+        return PheStyle::sans (13.5f, true, 0.05f);
     const auto label = b.getButtonText();
     if (label != label.toUpperCase())
-        return PheStyle::sans (14.5f, false, 0.01f);
-    return PheStyle::sans (15.0f, true, 0.05f);
+        return PheStyle::sans (15.5f, false, 0.01f);
+    return PheStyle::sans (16.0f, true, 0.04f);
 }
 
 void PanelLookAndFeel::drawButtonText (juce::Graphics& g, juce::TextButton& button, bool, bool)
@@ -212,7 +212,7 @@ void PanelLookAndFeel::drawComboBox (juce::Graphics& g, int width, int height, b
 
 juce::Font PanelLookAndFeel::getComboBoxFont (juce::ComboBox&)
 {
-    return PheStyle::sans (14.5f);
+    return PheStyle::sans (16.5f);
 }
 
 void PanelLookAndFeel::positionComboBoxText (juce::ComboBox& box, juce::Label& label)
@@ -223,5 +223,5 @@ void PanelLookAndFeel::positionComboBoxText (juce::ComboBox& box, juce::Label& l
 
 juce::Font PanelLookAndFeel::getPopupMenuFont()
 {
-    return PheStyle::sans (15.0f);
+    return PheStyle::sans (16.5f);
 }
