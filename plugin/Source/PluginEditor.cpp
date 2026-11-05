@@ -48,6 +48,9 @@ PhenomeEonSliderPanel::PhenomeEonSliderPanel (juce::AudioProcessorValueTreeState
     addButton (PheParams::clearReel,        "CLEAR REEL");
     addButton (PheParams::undo,             "UNDO");
 
+    styledPanelButton.onClick = [this] { if (onSwitchToStyled) onSwitchToStyled(); };
+    addAndMakeVisible (styledPanelButton);
+
     setSize (kWidth, kHeight);
 }
 
@@ -107,7 +110,7 @@ void PhenomeEonSliderPanel::paint (juce::Graphics& g)
 
     g.setColour (kMuted);
     g.setFont (font (13.0f));
-    g.drawText ("Plain slider window (milestone 2). Audio passes straight through; the controls do not change the sound yet.",
+    g.drawText ("Plain slider window (the fallback). Audio passes straight through; the controls do not change the sound yet.",
                 kLeft, 46, kWidth - 2 * kLeft, 20, juce::Justification::centredLeft);
 
     g.setColour (kAmber);
@@ -134,6 +137,8 @@ void PhenomeEonSliderPanel::resized()
         y += kRowHeight;
     }
 
+    styledPanelButton.setBounds (kWidth - kLeft - 150, 14, 150, 30);
+
     // Two groups of buttons: the five main ones, then the five that delete or undo.
     int by = kFirstRowY;
     int index = 0;
@@ -148,37 +153,100 @@ void PhenomeEonSliderPanel::resized()
 }
 
 //==============================================================================
+namespace
+{
+    // Window size in Logic: opens at 80%, can be made 60% to 150% of the panel's natural size (3:2 shape kept).
+    constexpr int kOpenWidth = 960,  kOpenHeight = 640;
+    constexpr int kMinWidth  = 720,  kMinHeight  = 480;
+    constexpr int kMaxWidth  = 1800, kMaxHeight  = 1200;
+
+    // Remembered in the saved project (not a control, so it does not touch automation): which window was showing.
+    const char* const kViewProperty = "editorView";
+}
+
 PhenomeEonEditor::PhenomeEonEditor (PhenomeEonProcessor& p)
     : juce::AudioProcessorEditor (p),
-      panel (p.getValueTreeState())
+      owner (p)
 {
-    lookAndFeel.setColourScheme (juce::LookAndFeel_V4::getDarkColourScheme());
-    setLookAndFeel (&lookAndFeel);
-    addAndMakeVisible (panel);
+    plainLook.setColourScheme (juce::LookAndFeel_V4::getDarkColourScheme());
 
-    // Resizable like Ceo: the panel is laid out in a fixed space and scaled to the window,
-    // keeping its shape. Smallest about 60%, largest 180%.
+    // Resizable like Ceo: the panel is laid out in a fixed space and scaled to the window, keeping its shape.
     setResizable (true, true);
-    setResizeLimits ((int) (PhenomeEonSliderPanel::kWidth * 0.6), (int) (PhenomeEonSliderPanel::kHeight * 0.6),
-                     (int) (PhenomeEonSliderPanel::kWidth * 1.8), (int) (PhenomeEonSliderPanel::kHeight * 1.8));
+    setResizeLimits (kMinWidth, kMinHeight, kMaxWidth, kMaxHeight);
     if (auto* aspect = getConstrainer())
-        aspect->setFixedAspectRatio ((double) PhenomeEonSliderPanel::kWidth / (double) PhenomeEonSliderPanel::kHeight);
+        aspect->setFixedAspectRatio ((double) kOpenWidth / (double) kOpenHeight);
 
-    setSize (PhenomeEonSliderPanel::kWidth, PhenomeEonSliderPanel::kHeight);
+    const bool plainWasShowing = owner.getValueTreeState().state.getProperty (kViewProperty).toString() == "plain";
+    showView (plainWasShowing ? View::plain : View::styled);
+
+    setSize (kOpenWidth, kOpenHeight);
 }
 
 PhenomeEonEditor::~PhenomeEonEditor()
 {
-    setLookAndFeel (nullptr);
+    styled.reset();
+    plain.reset();
+}
+
+void PhenomeEonEditor::showView (View view)
+{
+    styled.reset();
+    plain.reset();
+
+    if (view == View::styled)
+    {
+        styled = std::make_unique<StyledPanel> (owner.getValueTreeState(), owner, JucePlugin_VersionString);
+        styled->setLookAndFeel (&styledLook);
+        styled->onSwitchToPlain = [this] { requestView (View::plain); };
+        addAndMakeVisible (*styled);
+    }
+    else
+    {
+        plain = std::make_unique<PhenomeEonSliderPanel> (owner.getValueTreeState());
+        plain->setLookAndFeel (&plainLook);
+        plain->onSwitchToStyled = [this] { requestView (View::styled); };
+        addAndMakeVisible (*plain);
+    }
+
+    owner.getValueTreeState().state.setProperty (kViewProperty, view == View::plain ? "plain" : "styled", nullptr);
+    layOutPanel();
+    repaint();
+}
+
+void PhenomeEonEditor::requestView (View view)
+{
+    // Not switched straight away: the button that asked is part of the window being replaced.
+    juce::Component::SafePointer<PhenomeEonEditor> safe (this);
+    juce::MessageManager::callAsync ([safe, view]
+    {
+        if (safe != nullptr)
+            safe->showView (view);
+    });
+}
+
+const std::vector<juce::String>& PhenomeEonEditor::controlledParameterIds() const
+{
+    return styled != nullptr ? styled->controlledParameterIds() : plain->controlledParameterIds();
 }
 
 void PhenomeEonEditor::paint (juce::Graphics& g)
 {
-    g.fillAll (kBackground);
+    g.fillAll (PheStyle::background);
+}
+
+void PhenomeEonEditor::layOutPanel()
+{
+    juce::Component* panel = styled != nullptr ? static_cast<juce::Component*> (styled.get()) : static_cast<juce::Component*> (plain.get());
+    if (panel == nullptr)
+        return;
+
+    const int naturalWidth  = styled != nullptr ? StyledPanel::kWidth  : PhenomeEonSliderPanel::kWidth;
+    const int naturalHeight = styled != nullptr ? StyledPanel::kHeight : PhenomeEonSliderPanel::kHeight;
+    panel->setBounds (0, 0, naturalWidth, naturalHeight);
+    panel->setTransform (juce::AffineTransform::scale ((float) getWidth() / (float) naturalWidth));
 }
 
 void PhenomeEonEditor::resized()
 {
-    panel.setBounds (0, 0, PhenomeEonSliderPanel::kWidth, PhenomeEonSliderPanel::kHeight);
-    panel.setTransform (juce::AffineTransform::scale ((float) getWidth() / (float) PhenomeEonSliderPanel::kWidth));
+    layOutPanel();
 }

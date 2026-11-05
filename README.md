@@ -4,40 +4,50 @@ An original AU / VST3 effect for Logic Pro, inspired by the feel of a Eurorack g
 Make Noise Morphagene). All DSP is our own code; it is not a port or copy of anything, and it is not affiliated
 with Make Noise.
 
-Status: **milestone 2 (empty build with plain sliders; waiting for a test in Logic).**
+Status: **milestone 3 (styled panel on the empty build; waiting for a test in Logic).**
 
-Version 0.2.0 (milestone 2, waiting for a test in Logic): an **empty build**. It loads in Logic as an audio effect and
-passes the sound straight through, untouched. It has a plain, resizable window with one slider, menu or button for
-every control in the approved panel plan. **None of the controls change the sound yet**; each gets its function in a
-later milestone.
+Version 0.3.0 (milestone 3, waiting for a test in Logic): the **styled panel**, laid out like the approved mockup,
+on the same **empty build** as 0.2.0. It still loads in Logic as an audio effect and passes the sound straight
+through, untouched. **None of the controls change the sound yet**; each gets its function in a later milestone.
 
-- **Controls (21, all visible to Logic and automatable):**
-  - Eight knobs, 0 to 1: Input Level, Sound On Sound, Gene-Size, Slide, Vari-Speed, Morph, Organize, Output Level.
-  - Three menus: Input Gain Step (-3 / 0 / +6 / +12 dB, starts at 0 dB), Pitch Snap (Off / Steps / Semitones),
-    Pitch Scale (Off + 28 scales, the same list as the other particledots plugins).
-  - Ten buttons: REC, REC NEW SPLICE, SPLICE, SHIFT, PLAY, DELETE SPLICE MARKER, DELETE ALL MARKERS, ERASE SPLICE,
-    CLEAR REEL, UNDO. (They are plain on/off switches for now.)
-  - The knob starting positions are placeholders; each is set properly when its control gets its sound.
-  - Not controls yet: Load WAV, Save WAV, Reel folder (milestone 9) and the optional clock features (milestone 10).
-- **Window:** resizable, the same way as Ceo: laid out in a fixed 900 x 600 space and scaled to the window, keeping its
-  shape, smallest about 60%, largest 180%. The styled panel (milestone 3) replaces it and keeps the same control ids.
+- **Styled panel (the window you get when you open the plugin):** the title and reel-file strip, the reel display,
+  the eight knobs in one row, the three menus and the 4-step input gain selector, and the ten buttons, in the
+  approved colours (charcoal, amber, teal) with Space Grotesk and IBM Plex Mono (free open-licence fonts, built in,
+  licence texts in `plugin/Fonts/`).
+  - Knobs: drag up/down to turn, double-click to return to the starting position. Read-outs under the knobs are plain
+    percentages for now; each knob gets its real unit (dB, seconds, speed ...) when it gets its sound.
+  - The reel display shows an **empty reel** (ruler to 2:54, all of it free reel time, status line, audio format).
+    Waveforms, splice markers, gene box and playhead are drawn by the same code but only appear once there is a reel
+    (milestone 4 on).
+  - **Load WAV, Save WAV and Reel folder are shown but greyed out**; they come alive in milestone 9. The dashed
+    Clock box is space kept for the optional clock features (milestone 10).
+  - The buttons are still plain on/off switches (as in 0.2.0); how each one behaves (held, toggled, or click) is decided
+    when it gets its function.
+- **Plain slider window (the fallback):** still there. Press **PLAIN SLIDERS** at the bottom right of the styled panel
+  to switch to it, and **Styled panel** at its top right to switch back. Which one was showing is remembered in the
+  saved project. Both windows use the same 21 control ids, so automation and saved projects behave the same in either.
+- **Window size:** opens at 960 x 640, resizable from 720 x 480 to 1800 x 1200, shape kept (3:2). The panel is laid out in
+  a fixed 1200 x 800 space (the plain window in 900 x 600) and scaled to fit.
+- **Controls (21, all visible to Logic and automatable):** unchanged from 0.2.0: eight knobs (0 to 1), three menus
+  (Input Gain Step, Pitch Snap, Pitch Scale), ten buttons.
 - **Sound:** mono or stereo in, the same out, bit for bit. No delay (latency 0), no tail.
 - **Names and codes:** shown as "PhenomeEon" under Audio Units > particledots; AU type Effect, manufacturer code `Pdot`,
   plugin code `Phe1`, bundle id `com.particledots.phenomeeon`.
 
-What has been checked automatically by the build: the engine self-test (121 checks: audio identical in and out for mono
-and stereo, several sample rates and block sizes, with every control at an extreme; the scale list and gain steps);
-the plugin compiles, is a universal binary (Apple Silicon + Intel), is signed ad-hoc, and is run through Apple's
-validator (`auval`) and pluginval (results in the package).
-Not yet tested: loading in Logic on the M4 Mac mini (macOS Tahoe, Logic 11.2.2) and on the Intel Mac (macOS 12.7.8,
-Logic 10.7.8).
+What has been checked automatically (before any test in Logic): the engine self-test (121 checks); a one-off run on
+Linux that draws both windows to pictures (compared with the approved mockup) and moves every control in both windows,
+checking that each changes exactly one parameter, that all 21 parameters have exactly one control, that host automation
+moves the control, and that the choice of window survives save and reload (108 checks); and the GitHub build (compiles,
+universal Apple Silicon + Intel, ad-hoc signed, `auval`, pluginval).
+Not yet tested: the styled panel in Logic on the M4 Mac mini (macOS Tahoe, Logic 11.2.2) and on the Intel Mac
+(macOS 12.7.8, Logic 10.7.8).
 
 ## Folders
 
 | Folder | What it is |
 |---|---|
 | `engine/` | The audio engine. Plain C++, no plugin code. This is the part reused for later plugins. `engine/include/phe/core/` holds the generic parts (scales so far); the reel and gene engine goes next to it. |
-| `plugin/` | The plugin wrapper: what Logic sees, the list of controls, and the window. |
+| `plugin/` | The plugin wrapper: what Logic sees, the list of controls, and the windows (styled panel and plain sliders). `plugin/Fonts/` holds the panel fonts and their licences; `plugin/preview/` is an optional tool that draws the panel to pictures and checks the controls (not part of the plugin). |
 | `tools/install/` | The generic installer used by all the "Unofficial" plugins. |
 | `.github/workflows/` | The automatic build. |
 
