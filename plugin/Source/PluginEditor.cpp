@@ -14,7 +14,7 @@ namespace
 
     // Layout, in the fixed 1200 x 800 space (the same 3:2 shape as the styled panel).
     constexpr int kLeft = 24, kLabelWidth = 150, kSliderWidth = 440, kTextBoxWidth = 80;
-    constexpr int kRowHeight = 40, kFirstRowY = 78;
+    constexpr int kRowHeight = 40, kFirstRowY = 92;
     constexpr int kButtonX = 800, kButtonWidth = 370, kButtonHeight = 40, kButtonGap = 8;
 }
 

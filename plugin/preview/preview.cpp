@@ -644,9 +644,11 @@ int main (int argc, char** argv)
         expect (view().numSplices == 1, "wrapper (M7): Clear Reel takes the markers away");
 
         // ---------------- milestone 8: Erase Splice, Undo / Redo, the option menus ----------------
-        setParameter (proc, PheParams::deleteAllMarkers, 1.0f);
-        feedSilenceLoudest (proc, 2);
-        letWindowThreadRun (200);
+        // The reel was cleared just above: record a fresh 3-second take, then work on it
+        setParameter (proc, PheParams::rec, 1.0f);
+        feed (proc, clock, 281);
+        setParameter (proc, PheParams::rec, 0.0f);
+        feed (proc, clock, 3);
         feedSilenceLoudest (proc, 400);
         setParameter (proc, PheParams::splice, 1.0f);
         feedSilenceLoudest (proc, 2);
