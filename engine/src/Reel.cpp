@@ -76,6 +76,31 @@ float Reel::read (int channel, double position) const
     return d[i0] + (d[i1] - d[i0]) * frac;
 }
 
+float Reel::readCubic (int channel, double position) const
+{
+    const int length = len.load (std::memory_order_relaxed);
+    if (length <= 0)
+        return 0.0f;
+
+    const float* d = data[channel & 1].get();
+    const int i1 = std::min (length - 1, std::max (0, (int) position));
+    const float frac = (float) (position - (double) i1);
+    if (frac <= 0.0f)
+        return d[i1];
+
+    // The reel loops, so the neighbours of the first and last samples wrap round.
+    const int i0 = i1 > 0 ? i1 - 1 : length - 1;
+    const int i2 = i1 + 1 < length ? i1 + 1 : 0;
+    const int i3 = i2 + 1 < length ? i2 + 1 : 0;
+    const float y0 = d[i0], y1 = d[i1], y2 = d[i2], y3 = d[i3];
+
+    // Catmull-Rom curve: passes through y1 and y2, smooth in between.
+    const float c1 = 0.5f * (y2 - y0);
+    const float c2 = y0 - 2.5f * y1 + 2.0f * y2 - 0.5f * y3;
+    const float c3 = 0.5f * (y3 - y0) + 1.5f * (y1 - y2);
+    return ((c3 * frac + c2) * frac + c1) * frac + y1;
+}
+
 void Reel::rebuildPeaks()
 {
     peaks.clear();

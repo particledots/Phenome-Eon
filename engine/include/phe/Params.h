@@ -5,9 +5,10 @@
 // Params and reuse everything else.
 //
 // Knobs run 0.0 to 1.0. What each position means (decibels, seconds, semitones, percent) is decided inside the
-// engine when each control gets its sound. Milestone 4 gives meaning to Input Level, Sound On Sound and Output
-// Level, to the Input Gain Step menu, and to the Rec, Play and Clear Reel buttons. The other controls are
-// accepted and stored but do not change the sound yet (milestones 5 to 8).
+// engine when each control gets its sound. Milestone 4 gave meaning to Input Level, Sound On Sound and Output
+// Level, to the Input Gain Step menu, and to the Rec, Play and Clear Reel buttons. Milestone 5 adds Vari-Speed,
+// Gene-Size, Slide and the Pitch Snap menu. The other controls are accepted and stored but do not change the sound
+// yet (milestones 6 to 8).
 
 #pragma once
 
@@ -18,28 +19,31 @@ namespace phe
     inline constexpr float kDefaultSoundOnSound = 0.5f;    // live input and reel loop both at full level
     inline constexpr float kDefaultOutputLevel  = 0.75f;   // 0 dB (no change)
     inline constexpr bool  kDefaultPlay         = true;    // like the module with nothing patched to Play: the reel loops
+    inline constexpr float kDefaultGeneSize     = 0.0f;    // fully left: a gene is the whole reel
+    inline constexpr float kDefaultSlide        = 0.0f;    // fully left: genes start at the start of the reel
+    inline constexpr float kDefaultVariSpeed    = 0.75f;   // original speed, forwards (the "2:30" position)
 
     struct Params
     {
         // Knobs, 0..1 (the panel's eight knobs, in panel order)
         float inputLevel   = kDefaultInputLevel;
         float soundOnSound = kDefaultSoundOnSound;
-        float geneSize     = 0.5f;
-        float slide        = 0.5f;
-        float variSpeed    = 0.5f;
+        float geneSize     = kDefaultGeneSize;
+        float slide        = kDefaultSlide;
+        float variSpeed    = kDefaultVariSpeed;
         float morph        = 0.5f;
         float organize     = 0.5f;
         float outputLevel  = kDefaultOutputLevel;
 
         // Menus
         int inputGainStep = 1;     // 0..3 = -3, 0, +6, +12 dB (see kInputGainStepDb)
-        int pitchSnap     = 0;     // 0 Off, 1 Steps, 2 Semitones
+        int pitchSnap     = 0;     // 0 Off, 1 Steps, 2 Semitones (lands Vari-Speed on notes)
         int pitchScale    = 0;     // 0 Off, 1..28 = the scales in core/Scales.h
 
         // Buttons (on = true).
         //   rec:        on = recording, off = not recording (a switch).
-        //   play:       on = the reel loops; turning it on starts from the beginning; turning it off lets the
-        //               pass in progress finish and then stops.
+        //   play:       on = the reel loops; turning it on starts a fresh gene from the Slide position; turning it
+        //               off lets the gene in progress finish and then stops.
         //   clearReel:  acts the moment it goes on (the plugin switches it back off by itself).
         // The others are not used yet (milestones 7 and 8).
         bool rec = false, recNewSplice = false, splice = false, shift = false, play = kDefaultPlay;

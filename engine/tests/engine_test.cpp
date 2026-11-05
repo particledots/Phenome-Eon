@@ -1,9 +1,12 @@
 // Self-test for the PhenomeEon engine. Run automatically by the build; the build fails if any check fails.
 // Milestone 4: the reel, recording, Sound On Sound and basic playback.
+// Milestone 5: the tape head and genes (Vari-Speed, Gene-Size, Slide) and Pitch Snap.
 
 #include <phe/Engine.h>
 #include <phe/core/Gain.h>
 #include <phe/core/Scales.h>
+#include <phe/core/VariSpeed.h>
+#include <phe/GenePlayer.h>
 
 #include <algorithm>
 #include <cmath>
@@ -597,6 +600,7 @@ static void testExtremeControlsStayFinite()
     {
         r.p.inputLevel = rnd();   r.p.soundOnSound = rnd();  r.p.outputLevel = rnd();
         r.p.geneSize = rnd();     r.p.variSpeed = rnd();     r.p.morph = rnd();
+        r.p.slide = rnd();        r.p.pitchSnap = (int) (rnd() * 2.99f);
         r.p.inputGainStep = (int) (rnd() * 3.99f);
         r.p.rec = rnd() > 0.7f;   r.p.play = rnd() > 0.3f;   r.p.clearReel = rnd() > 0.97f;
         r.p.splice = r.p.shift = r.p.undo = r.p.eraseSplice = rnd() > 0.5f;
@@ -611,18 +615,477 @@ static void testExtremeControlsStayFinite()
     CHECK (lengthOk, "reel length always stays in range");
 }
 
+
+//==============================================================================
+// ---- milestone 5: the tape head and genes ----
+
+// Records a take of n samples, then stops the loop and starts it again with the controls as they are now, so the next
+// samples come out from the very start of a gene with no gliding. Input is silent afterwards, so we hear only the reel.
+static void startFreshFromControls (Rig& r, int n)
+{
+    r.p.play = false;
+    r.run (n + 2000, 500, silence);               // the pass in progress finishes, then it stops
+    r.p.play = true;                              // acted on at the start of the next block: a fresh gene
+}
+
+static void testVariSpeedLandmarks()
+{
+    using phe::dsp::variSpeed;
+    const auto stop = variSpeed (0.5f, 0);
+    CHECK (stop.stopped && stop.rate == 0.0f, "knob in the middle: stopped");
+    CHECK (variSpeed (0.75f, 0).rate == 1.0f,  "knob at 2:30: exactly original speed forwards");
+    CHECK (variSpeed (0.25f, 0).rate == -1.0f, "knob at 9:30: exactly original speed backwards");
+    CHECK (near (variSpeed (1.0f, 0).rate, 2.0f, 1.0e-5f),  "right end: one octave up");
+    CHECK (near (variSpeed (0.0f, 0).rate, -2.0f, 1.0e-5f), "left end: one octave up, backwards");
+    CHECK (near (variSpeed (1.0f, 0).semitones, 12.0f, 1.0e-4f), "right end is +12 semitones");
+
+    // From the middle outwards the speed only ever grows; both sides mirror each other.
+    float last = 0.0f;
+    bool grows = true, mirrored = true, smooth = true, finite = true;
+    float lowest = 1.0f;
+    for (int i = 0; i <= 2000; ++i)
+    {
+        const float k = 0.5f + 0.5f * (float) i / 2000.0f;
+        const float rf = variSpeed (k, 0).rate;
+        const float rb = variSpeed (1.0f - k, 0).rate;
+        if (rf < last - 1.0e-6f) grows = false;
+        if (std::fabs (rf + rb) > 1.0e-5f) mirrored = false;
+        if (std::fabs (rf - last) > 0.02f) smooth = false;      // no jumps while moving the knob a 2000th of its travel
+        if (! std::isfinite (rf)) finite = false;
+        if (rf > 0.0f) lowest = std::min (lowest, rf);
+        last = rf;
+    }
+    CHECK (grows, "turning the knob away from the middle only ever speeds the tape up");
+    CHECK (mirrored, "backwards mirrors forwards");
+    CHECK (smooth, "no jumps in the curve");
+    CHECK (finite, "always a normal number");
+
+    // The slow side reaches 26 semitones down (0.2227 times original speed) before braking to a stop.
+    const float down26 = std::exp2 (-26.0f / 12.0f);
+    bool reached = false;
+    for (int i = 0; i <= 4000; ++i)
+        if (std::fabs (variSpeed (0.5f + 0.25f * (float) i / 4000.0f, 0).rate - down26) < 0.002f) reached = true;
+    CHECK (reached, "the slow side passes through 26 semitones below original speed");
+
+    // More knob travel for the slow speeds than for the fast ones (finer control when braking)
+    int slowSteps = 0, fastSteps = 0;
+    for (int i = 0; i < 1000; ++i)
+    {
+        const float k = 0.5f + 0.5f * (float) i / 1000.0f;
+        (variSpeed (k, 0).rate < 1.0f ? slowSteps : fastSteps)++;
+    }
+    CHECK (std::abs (slowSteps - fastSteps) < 20, "the knob is split evenly: half of it below original speed, half above (%d / %d)", slowSteps, fastSteps);
+    const float halfWay = variSpeed (0.5f + 0.125f, 0).rate;       // half-way between stopped and original speed
+    CHECK (halfWay < 0.7f && halfWay > 0.05f, "half-way to original speed the tape is going slower than that (%.3f)", halfWay);
+
+    // Wild input
+    CHECK (variSpeed (std::numeric_limits<float>::quiet_NaN(), 0).stopped, "a bad knob value counts as the middle");
+    CHECK (variSpeed (5.0f, 0).rate == variSpeed (1.0f, 0).rate && variSpeed (-3.0f, 0).rate == variSpeed (0.0f, 0).rate, "knob values are limited to 0..1");
+}
+
+static void testPitchSnapMaths()
+{
+    using phe::dsp::variSpeed;
+
+    bool offSame = true, semitonesWhole = true, stepsOnList = true, signKept = true, brakeKept = true;
+    const float down26 = std::exp2 (-26.0f / 12.0f);
+    for (int i = 0; i <= 4000; ++i)
+    {
+        const float k = (float) i / 4000.0f;
+        const auto off = variSpeed (k, 0);
+        const auto sem = variSpeed (k, 2);
+        const auto stp = variSpeed (k, 1);
+        if (variSpeed (k, 7).rate != off.rate) offSame = false;       // anything that is not 1 or 2 means Off
+        if ((off.rate < 0.0f) != (sem.rate < 0.0f) || (off.rate < 0.0f) != (stp.rate < 0.0f)) signKept = false;
+        if (off.stopped != sem.stopped || off.stopped != stp.stopped) signKept = false;
+        if (off.stopped) continue;
+
+        if (std::fabs (off.rate) >= down26)
+        {
+            const float st = 12.0f * std::log2 (std::fabs (sem.rate));
+            if (std::fabs (st - std::round (st)) > 1.0e-3f) semitonesWhole = false;
+            const float stS = 12.0f * std::log2 (std::fabs (stp.rate));
+            bool onList = false;
+            for (float v : { 0.0f, 7.0f, 12.0f, 19.0f, 24.0f })
+                if (std::fabs (std::fabs (stS) - v) < 1.0e-3f) onList = true;
+            if (! onList) stepsOnList = false;
+        }
+        else
+        {
+            // in the last stretch before the stop position, Snap lets go: the braking curve is untouched
+            if (sem.rate != off.rate || stp.rate != off.rate) brakeKept = false;
+        }
+    }
+    CHECK (offSame, "Pitch Snap Off (or anything else) leaves the speed alone");
+    CHECK (semitonesWhole, "Semitones: the speed is always a whole number of semitones from original speed");
+    CHECK (stepsOnList, "Steps: only 0, 7, 12, 19 and 24 semitones (up or down) are reached");
+    CHECK (signKept, "Pitch Snap never changes the direction or the stop");
+    CHECK (brakeKept, "Pitch Snap lets go of the last stretch before the stop, so braking stays smooth");
+
+    // A few exact cases (knob values worked out from the curve: +24 semitones per half knob travel above original speed)
+    const float kPlus5  = 0.5f + 0.5f * (0.5f + 5.0f / 24.0f);
+    const float kPlus7  = 0.5f + 0.5f * (0.5f + 7.0f / 24.0f);
+    const float kPlus04 = 0.5f + 0.5f * (0.5f + 0.4f / 24.0f);
+    CHECK (near (variSpeed (kPlus5, 0).semitones, 5.0f, 1.0e-3f), "knob for +5 semitones: %.4f", variSpeed (kPlus5, 0).semitones);
+    CHECK (near (variSpeed (kPlus5, 1).semitones, 7.0f, 1.0e-4f), "Steps: +5 lands on +7");
+    CHECK (near (variSpeed (kPlus5, 2).semitones, 5.0f, 1.0e-4f), "Semitones: +5 stays +5");
+    CHECK (near (variSpeed (kPlus04, 2).semitones, 0.0f, 1.0e-4f) && variSpeed (kPlus04, 2).rate == 1.0f, "Semitones: +0.4 lands on original speed");
+    CHECK (near (variSpeed (kPlus7, 1).rate, std::exp2 (7.0f / 12.0f), 1.0e-5f), "Steps: +7 is a fifth up");
+    CHECK (near (variSpeed (1.0f - kPlus5, 1).rate, -std::exp2 (7.0f / 12.0f), 1.0e-5f), "backwards works the same");
+    CHECK (phe::dsp::snapSemitones (-13.0f, 1) == -12.0f && phe::dsp::snapSemitones (-16.0f, 1) == -19.0f, "Steps below zero mirror above zero");
+}
+
+static void testGeneSizeMap()
+{
+    const double L = 100.0;
+    CHECK (phe::geneSeconds (0.0f, L) == 0.0, "Gene-Size fully left: the whole reel");
+    CHECK (phe::geneSeconds (0.005f, L) == 0.0, "a little room at the left end still means the whole reel");
+    CHECK (near ((float) phe::geneSeconds (phe::kGeneFullZone + 0.0001f, L), (float) L, 0.5f), "just off the left end the gene is almost the whole reel");
+    CHECK (near ((float) phe::geneSeconds (1.0f, L), 0.001f, 1.0e-6f), "fully right: a thousandth of a second");
+
+    double last = 1.0e9;
+    bool falls = true;
+    for (int i = 0; i <= 1000; ++i)
+    {
+        const double g = phe::geneSeconds ((float) i / 1000.0f, L);
+        const double v = g == 0.0 ? L : g;
+        if (v > last + 1.0e-9) falls = false;
+        last = v;
+    }
+    CHECK (falls, "the gene only ever gets shorter as the knob goes right");
+
+    // The same knob position means a shorter gene on a shorter reel (it is a fraction of the reel at first)
+    CHECK (phe::geneSeconds (0.5f, 10.0) < phe::geneSeconds (0.5f, 100.0), "shorter reel, shorter gene at the same knob position");
+    CHECK (phe::geneSeconds (0.5f, 0.001) == 0.0, "a reel shorter than two thousandths of a second is always one whole gene");
+    CHECK (phe::geneSeconds (std::numeric_limits<float>::quiet_NaN(), L) == 0.0, "a bad knob value means the whole reel");
+}
+
+static void testReverseAndSpeed()
+{
+    const int n = 24000;
+    const int fade = (int) std::llround (0.0015 * 48000.0);
+
+    // Backwards at original speed: the reel comes out in reverse, with the usual fade at the lap's ends.
+    {
+        Rig r;
+        r.recordFirstTake (n, 500);
+        r.p.variSpeed = 0.25f;
+        startFreshFromControls (r, n);
+        const int total = n + 777;
+        const auto out = r.run (total, 500, silence);
+        bool ok = true;
+        for (int i = 0; i < total; ++i)
+        {
+            const int k = i % n;
+            const double position = k == 0 ? 0.0 : (double) (n - k);
+            const float expected = r.e.getReel().get (0, (int) position) * phe::dsp::edgeFade ((double) k, n, fade);
+            if (! near (out[0][(size_t) i], expected, 1.0e-5f)) ok = false;
+        }
+        CHECK (ok, "Vari-Speed at 9:30 plays the reel backwards at original speed");
+        CHECK (r.e.getReelView().rate == -1.0f, "the view reports the speed: %f", r.e.getReelView().rate);
+    }
+
+    // Double speed: every second sample, a lap in half the time.
+    {
+        Rig r;
+        r.recordFirstTake (n, 500);
+        r.p.variSpeed = 1.0f;
+        startFreshFromControls (r, n);
+        const int total = 2 * n;
+        const auto out = r.run (total, 500, silence);
+        bool ok = true;
+        for (int i = 0; i < total; ++i)
+        {
+            const int q = (2 * i) % n;
+            const float expected = r.e.getReel().get (0, q) * phe::dsp::edgeFade ((double) q, n, fade);
+            if (! near (out[0][(size_t) i], expected, 1.0e-4f)) ok = false;
+        }
+        CHECK (ok, "Vari-Speed fully right plays at twice the speed");
+    }
+
+    // Half speed (on the way between samples the curve through the neighbours is used): the whole numbers are exact.
+    {
+        Rig r;
+        r.recordFirstTake (n, 500);
+        // find the knob position that gives exactly half speed
+        float k = 0.5f, bestErr = 9.0f;
+        for (int i = 0; i <= 200000; ++i)
+        {
+            const float cand = 0.5f + 0.25f * (float) i / 200000.0f;
+            const float err = std::fabs (phe::dsp::variSpeed (cand, 0).rate - 0.5f);
+            if (err < bestErr) { bestErr = err; k = cand; }
+        }
+        r.p.variSpeed = k;
+        startFreshFromControls (r, n);
+        const int total = 4000;
+        const auto out = r.run (total, 500, silence);
+        // Whatever the exact speed is, the sound must be smooth and follow the reel at about half speed.
+        const double rate = phe::dsp::variSpeed (k, 0).rate;
+        bool followsReel = true;
+        for (int i = 100; i < total - 8; ++i)         // (after the short fade at the start of the gene)
+        {
+            const double q = rate * (double) i;
+            const double lo = std::min (r.e.getReel().read (0, q - 2.0), r.e.getReel().read (0, q + 2.0));
+            const double hi = std::max (r.e.getReel().read (0, q - 2.0), r.e.getReel().read (0, q + 2.0));
+            if (out[0][(size_t) i] < lo - 0.2 || out[0][(size_t) i] > hi + 0.2) followsReel = false;
+        }
+        CHECK (bestErr < 0.001f, "a knob position for half speed exists");
+        CHECK (followsReel, "slower playback follows the reel at the slower pace");
+    }
+}
+
+static void testStoppedTape()
+{
+    const int n = 24000;
+    Rig r;
+    r.recordFirstTake (n, 500);
+    r.run (5000, 500, silence);
+
+    r.p.variSpeed = 0.5f;                                 // stop the tape
+    r.run (30000, 500, silence);
+    const int stoppedAt = r.e.getReelView().playPos;
+    const auto out = r.run (20000, 500, silence);
+    float loudest = 0.0f;
+    for (float v : out[0]) loudest = std::max (loudest, std::fabs (v));
+    CHECK (loudest < 1.0e-6f, "a stopped tape is silent (no held-sample hum): %g", loudest);
+    CHECK (r.e.getReelView().playPos == stoppedAt, "the head stays put while stopped");
+    CHECK (r.e.getReelView().playing, "it is still 'playing', just at speed zero");
+
+    // Starting again carries on from where it halted
+    r.p.variSpeed = phe::kDefaultVariSpeed;
+    r.run (1000, 500, silence);
+    const int moved = (r.e.getReelView().playPos - stoppedAt + n) % n;
+    CHECK (moved > 500 && moved < 1500, "playback resumes from where it was halted (moved %d in 1000 samples)", moved);
+
+    // Slide scrubs the reel even while the tape is stopped, then goes quiet again when it stops moving
+    r.p.variSpeed = 0.5f;
+    r.p.slide = 0.0f;
+    r.run (30000, 500, silence);
+    float scrubLoud = 0.0f;
+    for (int step = 0; step < 40; ++step)
+    {
+        r.p.slide = 0.0f + 0.9f * (float) (step + 1) / 40.0f;
+        const auto o = r.run (500, 500, silence);
+        for (float v : o[0]) scrubLoud = std::max (scrubLoud, std::fabs (v));
+    }
+    CHECK (scrubLoud > 0.05f, "moving Slide scrubs the reel while the tape is stopped (%g)", scrubLoud);
+    r.run (20000, 500, silence);
+    const auto after = r.run (2000, 500, silence);
+    float quiet = 0.0f;
+    for (float v : after[0]) quiet = std::max (quiet, std::fabs (v));
+    CHECK (quiet < 1.0e-6f, "and it is silent again once Slide stops moving (%g)", quiet);
+}
+
+static void testGeneLengthIsTime()
+{
+    const int n = 96000;                                  // a 2 second reel at 48 kHz
+    // Gene-Size knob for a gene of about a tenth of a second
+    float knob = 0.4f;
+    const double G = phe::geneSeconds (knob, (double) n / 48000.0);
+    CHECK (G > 0.09 && G < 0.11, "knob %.2f gives a gene of about 0.1 s (%.4f)", knob, G);
+    const double geneSamples = G * 48000.0;
+
+    auto resetsFor = [&] (float variKnob, double& biggestJump, int& peakReached)
+    {
+        Rig r;
+        r.recordFirstTake (n, 500);
+        r.p.geneSize = knob;
+        r.p.variSpeed = variKnob;
+        startFreshFromControls (r, n);
+        std::vector<int> resets;
+        int previous = -1;
+        peakReached = 0;
+        for (int i = 0; i < 30000; ++i)
+        {
+            r.run (1, 1, silence);
+            const int pos = r.e.getReelView().playPos;
+            if (previous >= 0 && pos < previous) resets.push_back (i);
+            peakReached = std::max (peakReached, pos);
+            previous = pos;
+        }
+        biggestJump = 0.0;
+        for (size_t k = 1; k < resets.size(); ++k)
+            biggestJump = std::max (biggestJump, std::fabs ((double) (resets[k] - resets[k - 1]) - geneSamples));
+        return (int) resets.size();
+    };
+
+    double jump1 = 0, jump2 = 0;
+    int peak1 = 0, peak2 = 0;
+    const int resets1 = resetsFor (0.75f, jump1, peak1);       // original speed
+    const int resets2 = resetsFor (1.0f, jump2, peak2);        // double speed
+    CHECK (resets1 >= 5 && resets2 >= 5, "genes repeat: %d and %d restarts", resets1, resets2);
+    CHECK (jump1 < 1.5 && jump2 < 1.5, "a gene lasts the same time at any speed (off by %.2f / %.2f samples)", jump1, jump2);
+    CHECK (std::abs (peak1 - (int) geneSamples) < 4, "at original speed a gene covers its own length of reel (%d)", peak1);
+    CHECK (std::abs (peak2 - 2 * (int) geneSamples) < 8, "at double speed a gene covers twice as much reel (%d)", peak2);
+}
+
+static void testSlideAndGeneStart()
+{
+    const int n = 48000;
+    {
+        Rig r;
+        r.recordFirstTake (n, 500);
+        r.p.slide = 0.5f;
+        startFreshFromControls (r, n);
+        r.run (100, 100, silence);
+        CHECK (r.e.getReelView().playPos == n / 2 + 100, "with Slide half way a whole-reel lap starts half way in: %d", r.e.getReelView().playPos);
+    }
+    {
+        // Short genes start over at the Slide position, and each gene fades to nothing at its ends
+        Rig r;
+        r.recordFirstTake (n, 500);
+        r.p.geneSize = 0.5f;
+        r.p.slide = 0.25f;
+        startFreshFromControls (r, n);
+        int previous = -1, resets = 0;
+        bool startsAtSlide = true;
+        for (int i = 0; i < 20000; ++i)
+        {
+            r.run (1, 1, silence);
+            const int pos = r.e.getReelView().playPos;
+            if (previous >= 0 && pos < previous)
+            {
+                ++resets;
+                if (std::abs (pos - n / 4) > 2) startsAtSlide = false;
+            }
+            previous = pos;
+        }
+        CHECK (resets >= 3, "short genes repeat (%d)", resets);
+        CHECK (startsAtSlide, "every gene starts at the Slide position");
+        const auto v = r.e.getReelView();
+        CHECK (v.geneSeconds > 0.0f && v.geneSpan > 0, "the view shows the gene (%g s, %d samples)", v.geneSeconds, v.geneSpan);
+    }
+    {
+        // Moving Slide moves the playing gene straight away (no waiting for the next gene)
+        Rig r;
+        r.recordFirstTake (n, 500);
+        r.p.geneSize = 0.3f;
+        startFreshFromControls (r, n);
+        r.run (3000, 500, silence);
+        r.p.slide = 0.8f;
+        r.run (2000, 500, silence);
+        const int pos = r.e.getReelView().playPos;
+        CHECK (pos > (int) (0.7 * n) && pos < (int) (0.95 * n), "Slide moves the playing gene at once: %d", pos);
+    }
+    {
+        // Backwards, a gene is the stretch before the Slide position
+        Rig r;
+        r.recordFirstTake (n, 500);
+        r.p.geneSize = 0.5f;
+        r.p.slide = 0.5f;
+        r.p.variSpeed = 0.25f;
+        startFreshFromControls (r, n);
+        r.run (200, 100, silence);
+        const auto v = r.e.getReelView();
+        CHECK (v.playPos < n / 2, "going backwards the head moves to the left of the Slide position (%d)", v.playPos);
+        CHECK (v.geneStart + v.geneSpan <= n / 2 + 2 || v.geneStart > n / 2, "and the gene window sits before the Slide position (%d + %d)", v.geneStart, v.geneSpan);
+    }
+}
+
+static void testGeneFadesAndPlayOff()
+{
+    const int n = 48000;
+    Rig r;
+    r.recordFirstTake (n, 500);
+    r.p.geneSize = 0.55f;
+    startFreshFromControls (r, n);
+    const double G = phe::geneSeconds (0.55f, (double) n / 48000.0) * 48000.0;
+    const int total = (int) (G * 6);
+    const auto out = r.run (total, 1, silence);
+
+    // At each gene boundary the sound is faded to (almost) nothing, so the joins do not click.
+    bool quietAtJoins = true, loudBetween = false;
+    for (int k = 1; k < 6; ++k)
+    {
+        const int at = (int) std::llround ((double) k * G);
+        if (std::fabs (out[0][(size_t) at]) > 0.02f) quietAtJoins = false;
+        if (std::fabs (out[0][(size_t) (at + (int) G / 2)]) > 0.02f) loudBetween = true;
+    }
+    CHECK (quietAtJoins, "short genes fade at their ends");
+    CHECK (loudBetween, "and are audible in between");
+
+    // Play off: the gene in progress is the last one, then silence
+    r.p.play = false;
+    const auto tail = r.run ((int) (G * 2) + 500, 1, silence);
+    CHECK (! r.e.getReelView().playing, "Play off stops after the gene in progress");
+    bool quiet = true;
+    for (size_t i = (size_t) G + 300; i < tail[0].size(); ++i)
+        if (tail[0][i] != 0.0f) quiet = false;
+    CHECK (quiet, "silent after the last gene");
+}
+
+static void testPitchSnapInEngine()
+{
+    const int n = 24000;
+    auto run = [&] (float knob, int snap)
+    {
+        Rig r;
+        r.recordFirstTake (n, 500);
+        r.p.variSpeed = knob;
+        r.p.pitchSnap = snap;
+        startFreshFromControls (r, n);
+        return r.run (8000, 500, silence);
+    };
+
+    const float kPlus5  = 0.5f + 0.5f * (0.5f + 5.0f / 24.0f);
+    const float kPlus7  = 0.5f + 0.5f * (0.5f + 7.0f / 24.0f);
+    const float kPlus04 = 0.5f + 0.5f * (0.5f + 0.4f / 24.0f);
+
+    const auto unity = run (0.75f, 0);
+    const auto semis = run (kPlus04, 2);
+    CHECK (unity[0] == semis[0], "Semitones snap: a knob a little above original speed plays exactly at original speed");
+
+    const auto fifthSteps = run (kPlus5, 1);
+    const auto fifthPlain = run (kPlus7, 0);
+    bool same = true;
+    for (size_t i = 0; i < fifthSteps[0].size(); ++i)
+        if (! near (fifthSteps[0][i], fifthPlain[0][i], 2.0e-3f)) same = false;
+    CHECK (same, "Steps snap: a knob near +5 semitones plays at +7 semitones");
+
+    const auto raw5 = run (kPlus5, 0);
+    bool differs = false;
+    for (size_t i = 0; i < raw5[0].size(); ++i)
+        if (std::fabs (raw5[0][i] - fifthSteps[0][i]) > 0.01f) differs = true;
+    CHECK (differs, "with Pitch Snap off the same knob position plays at its own pitch");
+}
+
+static void testRecordSpeedIsConstant()
+{
+    // The speed of the tape head never changes how fast recording writes onto the reel.
+    const int n = 24000;
+    Rig r;
+    r.recordFirstTake (n, 500);
+    r.run (2000, 500, silence);
+    r.p.variSpeed = 1.0f;                     // playing at double speed ...
+    r.run (2000, 500, silence);
+    const int before = r.e.getReelView().recPos;
+    r.p.rec = true;                           // ... record over it
+    r.run (6000, 500, tone);
+    const auto v = r.e.getReelView();
+    CHECK (v.recording, "recording");
+    const int advanced = (v.recPos - (before == 0 ? 0 : 0) + n) % n;
+    // recording starts at the playhead and then moves exactly one sample per sample
+    r.run (1000, 500, tone);
+    const int after = r.e.getReelView().recPos;
+    CHECK (((after - v.recPos) + n) % n == 1000, "recording moves one sample per sample whatever the playback speed (%d)", ((after - v.recPos) + n) % n);
+    (void) advanced;
+    r.p.rec = false;
+    r.run (500, 500, silence);
+    CHECK (r.e.getReelView().lengthSamples == n, "recording over does not change the reel length");
+}
+
 static void testControlsNotYetUsed()
 {
-    // Gene-Size, Slide, Vari-Speed, Morph, Organize and the pitch menus are stored but do not change the sound yet.
+    // Morph, Organize, Pitch Scale and the splice buttons are stored but do not change the sound yet.
     Rig a, b;
-    b.p.geneSize = 1.0f; b.p.slide = 0.0f; b.p.variSpeed = 0.0f; b.p.morph = 1.0f; b.p.organize = 1.0f;
-    b.p.pitchSnap = 2; b.p.pitchScale = 28; b.p.splice = b.p.shift = true;
+    b.p.morph = 1.0f; b.p.organize = 1.0f;
+    b.p.pitchScale = 28; b.p.splice = b.p.shift = true;
     a.recordFirstTake (12000, 500);
     b.recordFirstTake (12000, 500);
     const auto oa = a.run (30000, 500, tone);
     const auto ob = b.run (30000, 500, tone);
     CHECK (oa[0] == ob[0] && oa[1] == ob[1], "the controls that are not used yet do not change the sound");
-    CHECK (b.e.getParams().variSpeed == 0.0f && b.e.getParams().morph == 1.0f, "stored control values");
+    CHECK (b.e.getParams().morph == 1.0f && b.e.getParams().organize == 1.0f, "stored control values");
 }
 
 static void testEdgeCases()
@@ -704,6 +1167,16 @@ int main()
     testWaveformPicture();
     testMonoAndTinyTake();
     testExtremeControlsStayFinite();
+    testVariSpeedLandmarks();
+    testPitchSnapMaths();
+    testGeneSizeMap();
+    testReverseAndSpeed();
+    testStoppedTape();
+    testGeneLengthIsTime();
+    testSlideAndGeneStart();
+    testGeneFadesAndPlayOff();
+    testPitchSnapInEngine();
+    testRecordSpeedIsConstant();
     testControlsNotYetUsed();
     testEdgeCases();
     testGainSteps();

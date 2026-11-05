@@ -1,5 +1,6 @@
 #include <phe/Engine.h>
 #include <phe/core/Gain.h>
+#include <phe/core/VariSpeed.h>
 
 #include <algorithm>
 #include <cmath>
@@ -10,7 +11,6 @@ namespace phe
 namespace
 {
     constexpr int    kMinFirstRecording = 64;       // a first recording shorter than this many samples is thrown away
-    constexpr double kEdgeFadeSeconds   = 0.0015;   // fade at each end of the loop, so the loop point does not click
     constexpr double kGateRampSeconds   = 0.004;    // punching in and out of a recording over existing audio
     constexpr double kSmoothSeconds     = 0.010;    // level knobs glide instead of jumping
 
@@ -25,6 +25,7 @@ namespace
 void Engine::prepare (double newSampleRate, int /*maxBlockSize*/, int /*numChannels*/)
 {
     sampleRate = newSampleRate > 0.0 ? newSampleRate : 48000.0;
+    player.prepare (sampleRate);
 
     // Only if the sample rate changed (or this is the first time) does the reel's memory change;
     // otherwise whatever is recorded stays exactly as it is.
@@ -32,12 +33,14 @@ void Engine::prepare (double newSampleRate, int /*maxBlockSize*/, int /*numChann
     {
         recActive = recStopping = recFirst = false;
         peakBucket = -1;
-        playPos = 0.0;
-        playing = params.play && reel.length() > 0;
+        if (params.play && reel.length() > 0)
+            player.start();
+        else
+            player.stop();
         viewPlayPos.store (0);
         viewRecPos.store (0);
         viewRecording.store (false);
-        viewPlaying.store (playing);
+        viewPlaying.store (player.isPlaying());
     }
 }
 
@@ -52,8 +55,10 @@ void Engine::reset()
         peakBucket = -1;
         recordStopped.store (true);
     }
-    playPos = 0.0;
-    playing = params.play && reel.length() > 0;
+    if (params.play && reel.length() > 0)
+        player.start();
+    else
+        player.stop();
     firstBlock = true;      // the controls are picked up afresh at the next block
 }
 
@@ -77,14 +82,13 @@ void Engine::startRecording()
         recFirst = true;
         recPos = 0;
         recGate = 1.0f;
-        playing = false;
-        playPos = 0.0;
+        player.stop();
     }
     else
     {
         // Recording over what is there, starting where the playhead is.
         recFirst = false;
-        recPos = std::min (length - 1, std::max (0, (int) playPos));
+        recPos = std::min (length - 1, std::max (0, (int) player.headPosition (reel)));
         recGate = 0.0f;
     }
 }
@@ -113,14 +117,15 @@ void Engine::finishFirstRecording()
     if (length < kMinFirstRecording)
     {
         reel.clear();                               // too short to be a recording
-        playing = false;
-        playPos = 0.0;
+        player.stop();
     }
     else
     {
         reel.setLength (length);
-        playPos = 0.0;                              // the new recording starts looping straight away (if Play is on)
-        playing = params.play;
+        if (params.play)
+            player.start();                         // the new recording starts looping straight away (if Play is on)
+        else
+            player.stop();
     }
 }
 
@@ -133,8 +138,7 @@ void Engine::clearReel()
     }
     peakBucket = -1;
     reel.clear();
-    playing = false;
-    playPos = 0.0;
+    player.stop();
     recPos = 0;
     clearHandled.store (true);
 }
@@ -188,9 +192,16 @@ void Engine::process (float* const* channels, int numChannels, int numSamples)
         prevRec = params.rec;
         prevPlay = params.play;
         prevClear = params.clearReel;
-        playing = params.play && reel.length() > 0 && ! (recActive && recFirst);
+        setPlayerTargets();
+        if (params.play && reel.length() > 0 && ! (recActive && recFirst))
+            player.start();
+        else
+            player.stop();
         firstBlock = false;
     }
+
+    // ---- the tape head and genes: what Vari-Speed, Pitch Snap, Gene-Size, Slide and Play ask for ----
+    setPlayerTargets();
 
     // ---- buttons: act when they change ----
     if (params.clearReel && ! prevClear)
@@ -213,17 +224,13 @@ void Engine::process (float* const* channels, int numChannels, int numSamples)
     if (params.play && ! prevPlay)
     {
         if (reel.length() > 0 && ! (recActive && recFirst))
-        {
-            playing = true;                         // turning Play on starts the reel from its beginning
-            playPos = 0.0;
-        }
+            player.start();                         // turning Play on starts a fresh gene, at the Slide position
     }
     prevPlay = params.play;
 
     // ---- constants for this block ----
     const float smoothK  = 1.0f - std::exp (-1.0f / (float) (kSmoothSeconds * sampleRate));
     const float gateStep = 1.0f / (float) (kGateRampSeconds * sampleRate);
-    const int fadeLength = std::max (1, (int) std::llround (kEdgeFadeSeconds * sampleRate));
     const int capacity = reel.capacity();
 
     for (int i = 0; i < numSamples; ++i)
@@ -238,24 +245,20 @@ void Engine::process (float* const* channels, int numChannels, int numSamples)
         float liveGain, loopGain;
         dsp::sosGains (sos, liveGain, loopGain);
 
-        // What the reel is playing right now (nothing while the first recording is being made)
+        // What the tape head is playing right now (nothing while the first recording is being made)
         const int length = reel.length();
-        float loopL = 0.0f, loopR = 0.0f, fade = 0.0f;
-        if (playing && length > 0 && ! (recActive && recFirst))
-        {
-            loopL = reel.read (0, playPos);
-            loopR = reel.read (1, playPos);
-            fade  = dsp::edgeFade (playPos, length, fadeLength);
-        }
+        GenePlayer::Out loop;
+        if (player.isPlaying() && length > 0 && ! (recActive && recFirst))
+            loop = player.step (reel);
 
-        // The mix. What is recorded is the mix without the loop-edge fade (so the fade is never baked into the
-        // reel); what is heard has the fade.
+        // The mix. What is heard is the live input plus the gene player's sound. What is recorded is the same mix,
+        // except that the fade at the end of a whole-reel lap is never baked into the reel (see GenePlayer.h).
         const float liveL = inL * liveGain, liveR = inR * liveGain;
-        const float recordL = liveL + loopL * loopGain;
-        const float recordR = liveR + loopR * loopGain;
-        channels[0][i] = (liveL + loopL * fade * loopGain) * gainOut;
+        const float recordL = liveL + loop.recordL * loopGain;
+        const float recordR = liveR + loop.recordR * loopGain;
+        channels[0][i] = (liveL + loop.heardL * loopGain) * gainOut;
         if (chs > 1)
-            channels[1][i] = (liveR + loopR * fade * loopGain) * gainOut;
+            channels[1][i] = (liveR + loop.heardR * loopGain) * gainOut;
 
         // ---- recording ----
         if (recActive)
@@ -300,36 +303,28 @@ void Engine::process (float* const* channels, int numChannels, int numSamples)
                 }
             }
         }
-
-        // ---- playhead ----
-        if (playing && ! (recActive && recFirst))
-        {
-            if (length > 0)
-            {
-                playPos += 1.0;
-                if (playPos >= (double) length)
-                {
-                    playPos -= (double) length;
-                    if (! params.play)              // Play was switched off: this pass was the last one
-                    {
-                        playing = false;
-                        playPos = 0.0;
-                    }
-                }
-            }
-            else
-            {
-                playing = false;
-                playPos = 0.0;
-            }
-        }
     }
 
     flushPeak();
-    viewPlayPos.store ((int) playPos);
+    const auto gene = player.view (reel);
+    viewPlayPos.store ((int) player.headPosition (reel));
+    viewGeneStart.store ((int) gene.windowStart);
+    viewGeneSpan.store ((int) gene.windowSpan);
+    viewGeneSeconds.store ((float) gene.geneSeconds);
+    viewRate.store (gene.rate);
     viewRecPos.store (recPos);
     viewRecording.store (recActive);
-    viewPlaying.store (playing && reel.length() > 0);
+    viewPlaying.store (player.isPlaying() && reel.length() > 0);
+}
+
+void Engine::setPlayerTargets()
+{
+    GenePlayer::Targets t;
+    t.rate = dsp::variSpeedRate (params.variSpeed, std::min (2, std::max (0, params.pitchSnap)));
+    t.geneSeconds = geneSeconds (params.geneSize, (double) reel.length() / sampleRate);
+    t.slide = clamp01 (params.slide);
+    t.playWanted = params.play;
+    player.setTargets (t);
 }
 
 //==============================================================================
@@ -340,6 +335,10 @@ Engine::ReelView Engine::getReelView() const
     v.capacitySamples = reel.capacity();
     v.sampleRate      = reel.sampleRate();
     v.playPos         = viewPlayPos.load();
+    v.geneStart       = viewGeneStart.load();
+    v.geneSpan        = viewGeneSpan.load();
+    v.geneSeconds     = viewGeneSeconds.load();
+    v.rate            = viewRate.load();
     v.recPos          = viewRecPos.load();
     v.recording       = viewRecording.load();
     v.playing         = viewPlaying.load();

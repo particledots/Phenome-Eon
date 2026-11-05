@@ -42,6 +42,10 @@ namespace phe
         // the sample after the last one is the first, because the reel loops).
         float read (int channel, double position) const;
 
+        // The same, but with a smoother four-point curve through the neighbouring samples. The tape head uses this
+        // because it reads at all sorts of speeds. Exactly the sample itself when 'position' is a whole number.
+        float readCubic (int channel, double position) const;
+
         // The waveform picture: each slice covers samplesPerBucket() samples of the whole reel capacity.
         int samplesPerBucket() const { return perBucket; }
         core::PeakOverview peaks;

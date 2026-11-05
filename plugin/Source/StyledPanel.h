@@ -19,9 +19,9 @@
 
 //==============================================================================
 // The reel display: ruler, two waveform lanes, splice markers, current gene and playhead.
-// Milestone 4 feeds it the real reel (read-only, from the engine): the recorded length, a waveform picture of what
-// is on the reel, the playhead and, while recording, the record head. Splice markers and the gene box are drawn by
-// the same code but only appear in the preview tool's made-up demo until milestones 5 and 7 give them real data.
+// It shows the real reel (read-only, from the engine): the recorded length, a waveform picture of what is on the reel,
+// the playhead, the current gene (the amber box, milestone 5) and, while recording, the record head. Splice markers
+// are drawn by the same code but only appear in the preview tool's made-up demo until milestone 7 gives them real data.
 class ReelDisplay : public juce::Component
 {
 public:

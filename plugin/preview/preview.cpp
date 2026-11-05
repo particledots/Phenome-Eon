@@ -114,6 +114,21 @@ namespace
         }
     }
 
+    // Like feed(), but silent input, and tells us the loudest output sample (left channel) over those blocks.
+    float feedSilenceLoudest (PhenomeEonProcessor& proc, int numBlocks)
+    {
+        juce::AudioBuffer<float> buffer (2, 512);
+        juce::MidiBuffer midi;
+        float loudest = 0.0f;
+        for (int b = 0; b < numBlocks; ++b)
+        {
+            buffer.clear();
+            proc.processBlock (buffer, midi);
+            loudest = juce::jmax (loudest, buffer.getMagnitude (0, 0, 512));
+        }
+        return loudest;
+    }
+
     void letWindowThreadRun (int milliseconds)
     {
         juce::MessageManager::getInstance()->runDispatchLoopUntil (milliseconds);
@@ -313,6 +328,131 @@ int main (int argc, char** argv)
         expect (parameterValue (proc, PheParams::rec) < 0.5f, "wrapper: the Rec button switches itself off when the reel is full");
         setParameter (proc, PheParams::clearReel, 1.0f);
         feed (proc, clock, 2);
+        letWindowThreadRun (200);
+        resetAll (proc);
+    }
+
+    // ---------------- the tape head and genes through the real processor (milestone 5) ----------------
+    {
+        resetAll (proc);
+        long long clock = 0;
+        feed (proc, clock, 4);
+        setParameter (proc, PheParams::rec, 1.0f);
+        feed (proc, clock, 281);                                    // about 3 seconds
+        setParameter (proc, PheParams::rec, 0.0f);
+        feed (proc, clock, 3);
+        const int reelLength = proc.getEngine().getReelView().lengthSamples;
+        expect (reelLength > 100000, "wrapper (M5): a 3 second reel was recorded (" + juce::String (reelLength) + ")");
+
+        setParameter (proc, PheParams::soundOnSound, 1.0f);         // hear the loop only
+        expect (feedSilenceLoudest (proc, 100) > 0.05f, "wrapper (M5): with the controls as they start, the reel plays");
+        expect (std::abs (proc.getEngine().getReelView().rate - 1.0f) < 1.0e-5f, "wrapper (M5): starting speed is exactly original speed");
+
+        // Vari-Speed in the middle: stopped and silent; back again: plays
+        setParameter (proc, PheParams::variSpeed, 0.5f);
+        feedSilenceLoudest (proc, 150);
+        expect (feedSilenceLoudest (proc, 20) < 1.0e-4f, "wrapper (M5): Vari-Speed in the middle stops the sound");
+        setParameter (proc, PheParams::variSpeed, 0.75f);
+        expect (feedSilenceLoudest (proc, 100) > 0.05f, "wrapper (M5): Vari-Speed back at 2:30 plays again");
+
+        // Backwards
+        setParameter (proc, PheParams::variSpeed, 0.25f);
+        expect (feedSilenceLoudest (proc, 100) > 0.05f, "wrapper (M5): backwards plays");
+        expect (proc.getEngine().getReelView().rate < -0.99f, "wrapper (M5): backwards is reported as a negative speed");
+        setParameter (proc, PheParams::variSpeed, 0.75f);
+        feedSilenceLoudest (proc, 100);
+
+        // Gene-Size: shorter genes
+        expect (proc.getEngine().getReelView().geneSeconds == 0.0f, "wrapper (M5): Gene-Size fully left is the whole reel");
+        setParameter (proc, PheParams::geneSize, 0.5f);
+        expect (feedSilenceLoudest (proc, 100) > 0.02f, "wrapper (M5): short genes make sound");
+        {
+            const auto v = proc.getEngine().getReelView();
+            expect (v.geneSeconds > 0.0f && v.geneSeconds < 1.0f, "wrapper (M5): Gene-Size half way gives a short gene (" + juce::String (v.geneSeconds, 3) + " s)");
+            expect (v.geneSpan > 0 && v.geneSpan < reelLength / 2, "wrapper (M5): and its window is part of the reel");
+        }
+
+        // Slide moves the gene
+        setParameter (proc, PheParams::slide, 0.6f);
+        feedSilenceLoudest (proc, 20);
+        {
+            const auto v = proc.getEngine().getReelView();
+            expect (v.geneStart > (int) (0.55 * reelLength) && v.geneStart < (int) (0.65 * reelLength),
+                    "wrapper (M5): Slide moves the gene's window (" + juce::String (v.geneStart) + ")");
+        }
+
+        // Pitch Snap through the menu: a knob a little above original speed lands exactly on original speed
+        setParameter (proc, PheParams::geneSize, 0.0f);
+        setParameter (proc, PheParams::slide, 0.0f);
+        const float knobPlus04 = 0.5f + 0.5f * (0.5f + 0.4f / 24.0f);
+        setParameter (proc, PheParams::variSpeed, knobPlus04);
+        feedSilenceLoudest (proc, 100);
+        const float smoothRate = proc.getEngine().getReelView().rate;
+        expect (smoothRate > 1.0f && smoothRate < 1.05f, "wrapper (M5): Pitch Snap off: the speed is a little over 1 (" + juce::String (smoothRate, 4) + ")");
+        if (auto* snap = proc.getValueTreeState().getParameter (PheParams::pitchSnap))
+            snap->setValueNotifyingHost (snap->convertTo0to1 (2.0f));          // Semitones
+        feedSilenceLoudest (proc, 100);
+        expect (std::abs (proc.getEngine().getReelView().rate - 1.0f) < 1.0e-4f, "wrapper (M5): Pitch Snap Semitones lands on original speed");
+        if (auto* snap = proc.getValueTreeState().getParameter (PheParams::pitchSnap))
+            snap->setValueNotifyingHost (snap->convertTo0to1 (0.0f));
+
+        // A picture with a real gene box
+        setParameter (proc, PheParams::variSpeed, 0.75f);
+        setParameter (proc, PheParams::geneSize, 0.42f);
+        setParameter (proc, PheParams::slide, 0.35f);
+        feedSilenceLoudest (proc, 60);
+        {
+            PhenomeEonEditor editor (proc);
+            editor.showView (PhenomeEonEditor::View::styled);
+            editor.setSize (1200, 800);
+            letWindowThreadRun (150);
+            save (editor, outDir.getChildFile ("styled_gene_box.png"), 1654.0f / 1200.0f);
+        }
+        setParameter (proc, PheParams::variSpeed, 0.5f);
+        feedSilenceLoudest (proc, 60);
+        {
+            PhenomeEonEditor editor (proc);
+            editor.showView (PhenomeEonEditor::View::styled);
+            editor.setSize (1200, 800);
+            letWindowThreadRun (150);
+            save (editor, outDir.getChildFile ("styled_tape_stopped.png"), 1654.0f / 1200.0f);
+        }
+
+        setParameter (proc, PheParams::clearReel, 1.0f);
+        feedSilenceLoudest (proc, 2);
+        letWindowThreadRun (200);
+        resetAll (proc);
+
+        // A longer reel (80 seconds) so the gene box is wide enough to see; one gene runs past the end and wraps round
+        feed (proc, clock, 4);
+        setParameter (proc, PheParams::rec, 1.0f);
+        feed (proc, clock, 7500);
+        setParameter (proc, PheParams::rec, 0.0f);
+        feed (proc, clock, 3);
+        setParameter (proc, PheParams::soundOnSound, 1.0f);
+        setParameter (proc, PheParams::geneSize, 0.30f);
+        setParameter (proc, PheParams::slide, 0.50f);
+        feedSilenceLoudest (proc, 50);
+        {
+            const auto v = proc.getEngine().getReelView();
+            expect (v.geneSpan > 0 && v.geneSeconds > 1.0f, "wrapper (M5): on a long reel the gene is seconds long (" + juce::String (v.geneSeconds, 2) + " s)");
+            PhenomeEonEditor editor (proc);
+            editor.showView (PhenomeEonEditor::View::styled);
+            editor.setSize (1200, 800);
+            letWindowThreadRun (150);
+            save (editor, outDir.getChildFile ("styled_gene_box_long_reel.png"), 1654.0f / 1200.0f);
+        }
+        setParameter (proc, PheParams::slide, 0.95f);
+        feedSilenceLoudest (proc, 50);
+        {
+            PhenomeEonEditor editor (proc);
+            editor.showView (PhenomeEonEditor::View::styled);
+            editor.setSize (1200, 800);
+            letWindowThreadRun (150);
+            save (editor, outDir.getChildFile ("styled_gene_box_wrapping.png"), 1654.0f / 1200.0f);
+        }
+        setParameter (proc, PheParams::clearReel, 1.0f);
+        feedSilenceLoudest (proc, 2);
         letWindowThreadRun (200);
         resetAll (proc);
     }

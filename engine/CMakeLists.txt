@@ -5,6 +5,7 @@
 
 add_library(phe_engine STATIC
     src/Engine.cpp
+    src/GenePlayer.cpp
     src/Reel.cpp
 )
 

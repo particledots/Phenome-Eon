@@ -23,13 +23,13 @@ juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
     juce::AudioProcessorValueTreeState::ParameterLayout layout;
 
     // The eight knobs. The starting positions of the ones that do something now (Input Level, Sound On Sound,
-    // Output Level) come from the engine's list, so there is one source for them; the others are placeholders
-    // until they get their sound.
+    // Gene-Size, Slide, Vari-Speed, Output Level) come from the engine's list, so there is one source for them; the
+    // others (Morph, Organize) are placeholders until they get their sound.
     layout.add (knob (inputLevel,   "Input Level",    phe::kDefaultInputLevel));
     layout.add (knob (soundOnSound, "Sound On Sound", phe::kDefaultSoundOnSound));
-    layout.add (knob (geneSize,     "Gene-Size",      0.5f));
-    layout.add (knob (slide,        "Slide",          0.5f));
-    layout.add (knob (variSpeed,    "Vari-Speed",     0.5f));
+    layout.add (knob (geneSize,     "Gene-Size",      phe::kDefaultGeneSize));
+    layout.add (knob (slide,        "Slide",          phe::kDefaultSlide));
+    layout.add (knob (variSpeed,    "Vari-Speed",     phe::kDefaultVariSpeed));
     layout.add (knob (morph,        "Morph",          0.5f));
     layout.add (knob (organize,     "Organize",       0.5f));
     layout.add (knob (outputLevel,  "Output Level",   phe::kDefaultOutputLevel));

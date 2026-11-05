@@ -1,6 +1,6 @@
 // The PhenomeEon audio engine.
 //
-// Milestone 4: the reel, recording, Sound On Sound and basic playback.
+// Milestone 5: the tape head and genes, on top of milestone 4 (the reel, recording, Sound On Sound, Clear Reel).
 //
 //   - The reel is one stereo strip of up to 2.9 minutes (see Reel.h).
 //   - Rec on an empty reel makes the first recording: the reel is as long as the recording (or fills up to
@@ -8,12 +8,15 @@
 //   - Rec on a reel that already has audio records over it, starting at the playhead and carrying on round the
 //     loop until Rec is switched off (this is the Morphagene's "Time Lag Accumulation" / Sound On Sound).
 //   - Sound On Sound blends the live input with the reel loop. What you hear is exactly what is recorded.
-//   - Play loops the reel at normal speed. (Speed, direction, genes and splices come in milestones 5 to 7.)
+//   - Play makes the tape head read the reel (GenePlayer.h): Vari-Speed sets the speed and direction (and Pitch Snap
+//     makes it land on notes), Gene-Size how long a gene is, Slide where it starts. The defaults give plain 1/1 looping.
+//     (Morph, splices and Organize come in milestones 6 and 7.)
 //
 // Plain C++17. No JUCE, no plugin code.
 
 #pragma once
 
+#include "GenePlayer.h"
 #include "Params.h"
 #include "Reel.h"
 
@@ -47,7 +50,11 @@ namespace phe
             int lengthSamples = 0;       // recorded so far
             int capacitySamples = 0;     // the most the reel can hold (2.9 minutes)
             double sampleRate = 0.0;
-            int playPos = 0;             // playhead, in samples from the start of the reel
+            int playPos = 0;             // where the tape head is reading, in samples from the start of the reel
+            int geneStart = 0;           // the gene's window in the reel (samples); it may run past the end and wrap round
+            int geneSpan = 0;
+            float geneSeconds = 0.0f;    // length of a gene in seconds; 0 = the whole reel
+            float rate = 0.0f;           // tape speed now (signed; negative = backwards)
             int recPos = 0;              // record head
             bool recording = false;
             bool playing = false;
@@ -67,6 +74,7 @@ namespace phe
         void clearReel();
         void notePeak (int position, float left, float right);
         void flushPeak();
+        void setPlayerTargets();
 
         Params params;
         Reel reel;
@@ -75,9 +83,8 @@ namespace phe
         bool firstBlock = true;
         bool prevRec = false, prevPlay = false, prevClear = false;
 
-        // Playback
-        bool playing = false;
-        double playPos = 0.0;
+        // Playback: the tape head and the gene player
+        GenePlayer player;
 
         // Recording
         bool recActive = false;
@@ -94,7 +101,8 @@ namespace phe
         float peakL = 0.0f, peakR = 0.0f;
 
         // For the window and the wrapper
-        std::atomic<int> viewPlayPos { 0 }, viewRecPos { 0 };
+        std::atomic<int> viewPlayPos { 0 }, viewRecPos { 0 }, viewGeneStart { 0 }, viewGeneSpan { 0 };
+        std::atomic<float> viewGeneSeconds { 0.0f }, viewRate { 0.0f };
         std::atomic<bool> viewRecording { false }, viewPlaying { false };
         std::atomic<bool> recordStopped { false }, clearHandled { false };
     };

@@ -1,5 +1,7 @@
 #include "StyledPanel.h"
 #include <phe/core/Gain.h>
+#include <phe/core/VariSpeed.h>
+#include <phe/GenePlayer.h>
 #include <cmath>
 
 using namespace PheStyle;
@@ -43,6 +45,46 @@ namespace
         return juce::String (juce::roundToInt (live * 100.0f)) + " / " + juce::String (juce::roundToInt (loop * 100.0f));
     }
 
+    // Length of a gene, for the read-outs: "45 ms", "1.20 s", "12.5 s".
+    juce::String geneLengthText (double seconds)
+    {
+        if (seconds >= 10.0)
+            return juce::String (seconds, 1) + " s";
+        if (seconds >= 1.0)
+            return juce::String (seconds, 2) + " s";
+        if (seconds >= 0.1)
+            return juce::String (juce::roundToInt (seconds * 1000.0)) + " ms";
+        return juce::String (seconds * 1000.0, 1) + " ms";
+    }
+
+    // Gene-Size read-out: the length of a gene (it depends on how long the reel is, so the engine is asked).
+    juce::String geneSizeText (double value, const phe::Engine& engine)
+    {
+        const auto view = engine.getReelView();
+        const double reelSeconds = view.sampleRate > 0.0 ? (double) view.lengthSamples / view.sampleRate : 0.0;
+        if (value <= (double) phe::kGeneFullZone)
+            return "whole reel";
+        if (reelSeconds <= 0.0)
+            return "no reel yet";
+        const double g = phe::geneSeconds ((float) value, reelSeconds);
+        return g <= 0.0 ? "whole reel" : geneLengthText (g);
+    }
+
+    // Vari-Speed read-out: the speed (with Pitch Snap off), or the note it lands on (with Pitch Snap on).
+    juce::String variSpeedText (double value, int pitchSnap)
+    {
+        const auto r = phe::dsp::variSpeed ((float) value, pitchSnap);
+        if (r.stopped)
+            return "STOP";
+        const juce::String direction = r.rate < 0.0f ? "rev " : "fwd ";
+        if (r.snapped)
+        {
+            const int st = juce::roundToInt (r.semitones);
+            return direction + (st > 0 ? "+" : "") + juce::String (st) + " st";
+        }
+        return juce::String (r.rate > 0.0f ? "+" : "-") + juce::String (std::fabs (r.rate), 2) + "x";
+    }
+
     // ---- layout, in the fixed 1200 x 800 space (measured from the approved mockup) ----
     constexpr int kMargin = 27;
     const juce::Rectangle<int> kReelFileBox  { 349, 34, 551, 63 };
@@ -79,7 +121,9 @@ void ReelDisplay::refresh()
     const auto now = engine->getReelView();
     if (now.lengthSamples != view.lengthSamples || now.capacitySamples != view.capacitySamples
         || ! juce::exactlyEqual (now.sampleRate, view.sampleRate) || now.playPos != view.playPos || now.recPos != view.recPos
-        || now.recording != view.recording || now.playing != view.playing)
+        || now.recording != view.recording || now.playing != view.playing
+        || now.geneStart != view.geneStart || now.geneSpan != view.geneSpan
+        || ! juce::exactlyEqual (now.geneSeconds, view.geneSeconds) || ! juce::exactlyEqual (now.rate, view.rate))
     {
         view = now;
         repaint();
@@ -109,7 +153,7 @@ void ReelDisplay::paint (juce::Graphics& g)
     juce::String state = "EMPTY";
     juce::Colour stateColour = muted;
     if (recording)             { state = "REC";  stateColour = recRed; }
-    else if (haveReel)         { state = view.playing ? "PLAY" : "STOP"; stateColour = text; }
+    else if (haveReel)         { state = (view.playing && std::fabs (view.rate) > 0.002f) ? "PLAY" : "STOP"; stateColour = text; }
 
     g.setColour (well);
     g.fillRoundedRectangle (b, 8.0f);
@@ -125,7 +169,7 @@ void ReelDisplay::paint (juce::Graphics& g)
         const std::vector<Item> items {
             { "REEL",     minutesSeconds (reelLength) + " / " + minutesSeconds (kReelSeconds), text },
             { "SPLICE",   demo ? "3 / 5" : (haveReel ? "1 / 1" : "-"),    amber },
-            { "GENE",     demo ? "4.5 s" : "-",    amber },
+            { "GENE",     demo ? "4.5 s" : (haveReel ? (view.geneSeconds > 0.0f ? geneLengthText ((double) view.geneSeconds) : juce::String ("whole")) : juce::String ("-")), amber },
             { "PLAYHEAD", minutesSeconds (playhead) + "." + juce::String ((int) std::floor ((playhead - std::floor (playhead)) * 10.0)), text },
             { "STATE",    demo ? "PLAY" : state,   demo ? text : stateColour },
         };
@@ -270,6 +314,31 @@ void ReelDisplay::paint (juce::Graphics& g)
         g.setColour (teal);
         g.fillPath (left);
         g.fillPath (right);
+    }
+
+    // The current gene (a box over the waveform): the stretch of reel the tape head is cutting out. Not drawn when the
+    // gene is the whole reel. It may run past the end of the reel and carry on from the start.
+    if (haveReel && view.geneSpan > 0 && (double) view.geneSpan < 0.98 * (double) view.lengthSamples)
+    {
+        const double start = (double) view.geneStart / rate;
+        const double span = (double) view.geneSpan / rate;
+        auto drawBox = [&] (double from, double to)
+        {
+            const float x0 = xFor (from);
+            const float x1 = juce::jmax (x0 + 3.0f, xFor (to));
+            const juce::Rectangle<float> gene (x0, waveTop + 5.0f, x1 - x0, h - waveTop - numbersH + 8.0f);
+            g.setColour (amber.withAlpha (0.22f));
+            g.fillRect (gene);
+            g.setColour (amber);
+            g.drawRect (gene, 1.5f);
+        };
+        if (start + span <= reelLength)
+            drawBox (start, start + span);
+        else
+        {
+            drawBox (start, reelLength);
+            drawBox (0.0, start + span - reelLength);
+        }
     }
 
     // Free reel time: hatched
@@ -478,14 +547,22 @@ StyledPanel::StyledPanel (juce::AudioProcessorValueTreeState& s, juce::AudioProc
     // ---- the eight knobs, in panel order ----
     auto& input = addKnob (PheParams::inputLevel, "INPUT LEVEL", KnobCard::Size::small, levelText);
     auto& sos   = addKnob (PheParams::soundOnSound, "SOUND ON SOUND", KnobCard::Size::small, soundOnSoundText);
-    addKnob (PheParams::geneSize,     "GENE-SIZE",      KnobCard::Size::small);
-    addKnob (PheParams::slide,        "SLIDE",          KnobCard::Size::small);
-    auto& vari  = addKnob (PheParams::variSpeed, "VARI-SPEED", KnobCard::Size::large);
+    auto& gene  = addKnob (PheParams::geneSize, "GENE-SIZE", KnobCard::Size::small,
+                           [&engine] (double v) { return geneSizeText (v, engine); });
+    auto& slide = addKnob (PheParams::slide,    "SLIDE",     KnobCard::Size::small);
+    auto& vari  = addKnob (PheParams::variSpeed, "VARI-SPEED", KnobCard::Size::large,
+                           [this] (double v)
+                           {
+                               const int snap = juce::jlimit (0, 2, (int) std::lround (state.getRawParameterValue (PheParams::pitchSnap)->load()));
+                               return variSpeedText (v, snap);
+                           });
     auto& morph = addKnob (PheParams::morph,     "MORPH",      KnobCard::Size::large);
     addKnob (PheParams::organize,    "ORGANIZE",     KnobCard::Size::small);
     auto& output = addKnob (PheParams::outputLevel, "OUTPUT LEVEL", KnobCard::Size::small, levelText);
 
-    // Short captions for the knobs that make sound in milestone 4
+    // Short captions for the knobs that make sound
+    gene.addNote ("left: whole reel\nright: shorter gene\n(length in time)", { 7, 194, 130, 62 }, juce::Justification::topLeft);
+    slide.addNote ("where the gene\nstarts in the reel\n(left = the start)", { 7, 194, 130, 62 }, juce::Justification::topLeft);
     sos.addNote ("live % / loop %\nleft: live only\nright: loop only", { 7, 194, 130, 62 }, juce::Justification::topLeft);
     output.addNote ("0.0 dB = no change", { 7, 194, 130, 22 }, juce::Justification::topLeft);
 
@@ -499,7 +576,8 @@ StyledPanel::StyledPanel (juce::AudioProcessorValueTreeState& s, juce::AudioProc
     auto& snap = makeChoice (PheParams::pitchSnap);
     vari.addNote ("PITCH SNAP", { 0, 193, kCardWidth, 22 }, juce::Justification::centred);
     vari.addExtra (snap.box, { 7, 220, 125, 32 });
-    vari.addNote ("Off / Steps / Semitones", { 0, 256, kCardWidth, 20 }, juce::Justification::centred);
+    vari.addNote ("middle = stop; 2:30 = 1x", { 0, 256, kCardWidth, 20 }, juce::Justification::centred);
+    snap.box.onChange = [&vari] { vari.repaint(); };         // the read-out changes with the Pitch Snap menu
 
     // Under Morph: Pitch Scale
     auto& scale = makeChoice (PheParams::pitchScale);
@@ -644,7 +722,7 @@ void StyledPanel::paint (juce::Graphics& g)
 
     // Footer
     g.setFont (mono (14.0f));
-    g.drawText ("PhenomeEon v" + versionText + "  -  Rec, Play, Sound On Sound, levels, Clear Reel work; the rest not yet",
+    g.drawText ("PhenomeEon v" + versionText + "  -  Morph, Organize, splices and the file buttons do not work yet",
                 juce::Rectangle<int> (kMargin, 757, 900, 28), juce::Justification::centredLeft, false);
 }
 
