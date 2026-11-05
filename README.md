@@ -4,71 +4,64 @@ An original AU / VST3 effect for Logic Pro, inspired by the feel of a Eurorack g
 Make Noise Morphagene). All DSP is our own code; it is not a port or copy of anything, and it is not affiliated
 with Make Noise.
 
-Status: **milestone 5 (the tape head and genes: Vari-Speed, Gene-Size, Slide, Pitch Snap): built and checked
-automatically; not yet tested in Logic.** Milestones 1 to 4 (mockup, empty build, styled panel, reel / Rec / Sound On
-Sound / playback) were tested in Logic on both Macs and work.
+Status: **milestone 6 (Morph and Pitch Scale): built and checked automatically; not yet tested in Logic.**
+Milestones 1 to 5 (mockup, empty build, styled panel, reel / Rec / Sound On Sound / playback, tape head and genes) were
+tested in Logic on both Macs and work.
 
-Version 0.5.0 (milestone 5, **not yet tested in Logic**): the reel now plays through a tape head. Same styled panel and
-the same 21 control ids as 0.4.0. Mono or stereo in, the same out. Everything from 0.4.0 (reel, REC, SOUND ON SOUND,
-PLAY, levels, CLEAR REEL) works as before.
+Version 0.6.0 (milestone 6, **not yet tested in Logic**): Morph and Pitch Scale now make sound. Same styled panel and the
+same 21 control ids as 0.5.0. Mono or stereo in, the same out. Everything from 0.5.0 works as before.
 
-- **Starting positions changed.** A new PhenomeEon now opens with Vari-Speed at 2:30 (original speed), Gene-Size fully left
-  and Slide fully left, so it plays a plain 1:1 loop. A project saved with 0.4.0 keeps the old middle positions it stored
-  (Vari-Speed in the middle means **stopped**): reset those three knobs, or add a fresh PhenomeEon.
-- **VARI-SPEED** (the big knob): speed and direction of the tape head. Middle = **stopped**. 2:30 (three quarters round)
-  = exactly original speed forwards; 9:30 (a quarter round) = exactly original speed backwards. Further out = faster, up to
-  one octave (+12 semitones) at each end. Between the middle and original speed it is slower: the pitch falls to 26
-  semitones below original, then the tape brakes smoothly to a stop. More knob travel is spent on the slow speeds, so
-  braking by hand feels smooth. The tape has a little inertia (a speed change glides over a few thousandths of a second).
-  When stopped nothing plays (no hum), and starting again carries on from where it halted. Vari-Speed changes only
-  playback, never the speed at which recording writes onto the reel. Our own curve, drawn through those landmarks; to be
-  tuned by ear.
-- **PITCH SNAP** (menu under Vari-Speed: Off / Steps / Semitones): makes Vari-Speed land on notes. **Semitones** lands on
-  whole semitones. **Steps** lands on octaves and fifths (0, 7, 12, 19, 24 semitones; on this knob the resting places are
-  -24 -19 -12 -7 0 +7 +12), the same list as Ceo. It works across the pitched range (+12 down to -26 semitones) and lets go in
-  the last stretch before the stop position, so braking stays smooth. With Pitch Snap on the knob's read-out shows the
-  note (for example "fwd +7 st"); with it off it shows the speed (for example "+1.50x"). Off by default.
-- **GENE-SIZE:** how long the playing piece of the reel (a "gene") is. Fully left = the whole reel (one lap, as in 0.4.0).
-  Turning it up shortens the gene smoothly, down to a thousandth of a second. A gene's length is a length of **time**, so
-  changing the speed does not change it (a faster tape covers more of the reel inside the same time). When a gene ends the
-  next one starts at once from the same place, so a short gene repeats like a grain loop. Each gene fades in and out over
-  1.5 thousandths of a second so the joins do not click. The read-out shows the length ("whole reel", "340 ms", "1.20 s").
-  How the knob maps to a time depends on the length of the reel: the first part of the travel is a fraction of the reel.
-- **SLIDE:** where the gene starts in the reel (fully left = the start of the reel). It moves the playing gene straight
-  away (with a tiny 3 ms glide against zipper noise), so turning it scrubs. It scrubs even while the tape is stopped, and
-  goes quiet again when it stops moving. Going backwards, a gene is the stretch of reel just before the Slide position.
-  With Gene-Size fully left it still sets where the lap starts. Turning PLAY on (or off and on) starts a fresh gene from the
-  Slide position.
-- **PLAY off** now lets the gene in progress finish, then stops (with Gene-Size fully left, that is the same as before).
-- **The reel display** shows the current gene as an amber box over the waveform (not drawn when the gene is the whole
-  reel; it can run past the end of the reel and carry on from the start), the GENE length in the status line, and STATE
-  reads STOP while the tape is stopped. A short reel is a sliver on the fixed 2:54 ruler, and a short gene a thin box.
-- **Recording and the tape head:** what is recorded back onto the reel is the mix you hear, as before: so recording
-  while Vari-Speed is not at original speed, or with short genes, records those changes (the Morphagene-style time lag
-  accumulation; the fade at the end of a whole-reel lap is still never recorded). Recording speed is always constant.
-- **Not working yet (stored and automatable, but no sound change):** Morph, Organize, the Pitch Scale menu, REC NEW SPLICE,
-  SPLICE, SHIFT and the four delete / undo buttons; Load WAV, Save WAV, Reel folder.
+- **Starting position changed.** A new PhenomeEon opens with Morph at 1/1 (about 8:30 to 9:00 on the knob, 0.18), so it
+  still plays a plain 1:1 loop. A project saved with 0.5.0 stored Morph at 0.5 (12:00, two genes at once): reset the Morph
+  knob, or add a fresh PhenomeEon.
+- **MORPH** (the big knob under the gene controls): how genes follow each other. A new gene starts every so often; Morph
+  sets how often, as a share of a gene's length.
+  - **Far left:** a gap of silence before each next gene (up to half a gene long); the read-out says "gap 30%".
+  - **About 8:30 to 9:00 (0.18): 1/1.** Genes follow each other with no gap and no overlap (a seamless loop). This is a small
+    flat zone, so it is easy to find; the read-out says "1/1".
+  - **Up to 12:00: overlap.** The next gene starts before the last one has ended, so copies of the same gene play together,
+    each a little later than the one before. At 12:00 two play at a time ("2/1").
+  - **Up to 1:00:** three at a time, equally spaced ("3/1"). Panning starts to fade in: the genes are spread across the
+    stereo picture (left, right, centre in turn); it is fully in by 2:30.
+  - **Past 2:30:** a fourth gene joins (spacing tightens to a quarter of a gene), and every new gene gets a **random pitch-up**
+    (from none up to two octaves at the end of the knob) and a **random place** in the stereo picture, both growing as the
+    knob goes round. The read-out shows the highest pitch-up (for example "3.6/1 +12st").
+  - Several genes together are turned down so the level stays steady (equal power: each is divided by the square root of
+    how many play at once). Genes keep their 1.5 ms fades. It works the same at any Gene-Size, up to the whole reel.
+  - Our own curves, drawn through the manual's landmarks; to be tuned by ear (all in `engine/include/phe/core/Morph.h`).
+- **PITCH SCALE** (menu under Morph: Off + 28 scales): decides which random pitch-ups are possible. **Off:** any amount up to
+  the range. **A scale:** only notes of that scale, counted up from the note Vari-Speed is playing now (so the root is
+  always the current Vari-Speed note), over as many octaves as the range reaches; the root itself is always possible. It
+  changes nothing below 2:30 on Morph, where there are no pitch-ups. Pitch Snap (on Vari-Speed) and Pitch Scale (on Morph)
+  work together.
+- **The reel display** has a GENES count in the status line (how many genes play at this moment).
+- **PLAY off** lets every gene in progress finish, then stops. A stopped tape is silent at any Morph setting.
+- **Recording** still writes what you hear (the Sound On Sound mix, including overlapped and pitched genes) at constant speed.
+- The random pitch-ups and places repeat the same way each time PLAY starts (the same random sequence each time).
+- **Not working yet (stored and automatable, but no sound change):** Organize, REC NEW SPLICE, SPLICE, SHIFT and the four
+  delete / undo buttons; Load WAV, Save WAV, Reel folder.
 - **When the buttons act:** Rec, Play and Clear Reel act while Logic is processing audio (playing). Logic does not run
   effects while stopped, so press Play in Logic, then use the buttons.
 - A project saved while Rec or Clear Reel was on opens with them off, so nothing starts recording or clears by itself.
 
-What has been checked automatically (before any test in Logic): the engine self-test (266 checks: everything from 0.4.0,
-plus the Vari-Speed landmarks and curve shape, Pitch Snap, the Gene-Size curve, exact backwards and double-speed playback,
-a stopped tape being silent and resuming where it halted, Slide scrubbing, genes lasting the same time at any speed,
-genes starting at the Slide position, gene fades, Play off, Pitch Snap through the engine, recording speed staying
-constant, random control changes staying finite), also run under a memory-error checker with no errors; a one-off run on
-Linux that draws the windows to pictures, moves every control in both windows and drives the real plugin code with audio
-(139 checks, including Vari-Speed stop and reverse, Gene-Size, Slide and Pitch Snap through the wrapper); and the GitHub build.
-Not yet tested: anything in Logic (M4 Mac mini, macOS Tahoe, Logic 11.2.2; Intel Mac, macOS 12.7.8, Logic 10.7.8).
+What has been checked automatically (before any test in Logic): the engine self-test (334 checks: everything from 0.5.0,
+plus the Morph landmarks and curve shape, gaps and exact start spacing, how many genes play at once at each setting, whole-
+reel genes, backwards and double-speed playback with overlaps, steady level, panning, random pitch-up amounts and the
+scales they stay in, Pitch Scale having no effect below 2:30, the Vari-Speed note being the root, results not depending on
+block size, Play off with overlapping genes, a stopped tape, recording while genes overlap, random control changes staying
+finite), also run under a memory-error checker with no errors; the preview tool (draws the windows to pictures, moves every
+control, drives the real plugin code with audio); and the GitHub build. Not yet tested: anything in Logic (M4 Mac mini, macOS
+Tahoe, Logic 11.2.2; Intel Mac, macOS 12.7.8, Logic 10.7.8).
 
-Earlier versions: 0.4.0 reel, Rec, Sound On Sound, basic playback (tested, works); 0.3.1 styled panel on the empty build
-(tested, works); 0.2.0 empty build with plain sliders (tested, works).
+Earlier versions: 0.5.0 tape head, genes, Vari-Speed, Pitch Snap (tested, works); 0.4.0 reel, Rec, Sound On Sound, basic
+playback (tested, works); 0.3.1 styled panel on the empty build (tested, works); 0.2.0 empty build with plain sliders
+(tested, works).
 
 ## Folders
 
 | Folder | What it is |
 |---|---|
-| `engine/` | The audio engine. Plain C++, no plugin code. This is the part reused for later plugins. `engine/include/phe/core/` holds the generic parts (scales, level helpers, the tape-speed curve and Pitch Snap, the waveform picture); `Reel.h`, `GenePlayer.h` and `Engine.h` are the reel, the tape head with its genes, and the engine (Morph comes in milestone 6). |
+| `engine/` | The audio engine. Plain C++, no plugin code. This is the part reused for later plugins. `engine/include/phe/core/` holds the generic parts (scales, level helpers, the tape-speed curve and Pitch Snap, the waveform picture); `Reel.h`, `GenePlayer.h` and `Engine.h` are the reel, the tape head with its genes, and the engine. `core/Morph.h` is the Morph curve and the random pitch-up / Pitch Scale choice. |
 | `plugin/` | The plugin wrapper: what Logic sees, the list of controls, and the windows (styled panel and plain sliders). `plugin/Fonts/` holds the panel fonts and their licences; `plugin/preview/` is an optional tool that draws the panel to pictures and checks the controls (not part of the plugin). |
 | `tools/install/` | The generic installer used by all the "Unofficial" plugins. |
 | `.github/workflows/` | The automatic build. |

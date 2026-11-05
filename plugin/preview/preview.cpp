@@ -457,6 +457,88 @@ int main (int argc, char** argv)
         resetAll (proc);
     }
 
+    // ---------------- Morph and Pitch Scale through the real processor (milestone 6) ----------------
+    {
+        resetAll (proc);
+        long long clock = 0;
+        feed (proc, clock, 4);
+        setParameter (proc, PheParams::rec, 1.0f);
+        feed (proc, clock, 281);                                    // about 3 seconds
+        setParameter (proc, PheParams::rec, 0.0f);
+        feed (proc, clock, 3);
+        setParameter (proc, PheParams::soundOnSound, 1.0f);         // hear the loop only
+
+        expect (std::abs (parameterValue (proc, PheParams::morph) - phe::kDefaultMorph) < 1.0e-6f, "wrapper (M6): Morph starts at 1/1");
+        feedSilenceLoudest (proc, 50);
+        expect (proc.getEngine().getReelView().voices == 1, "wrapper (M6): at the starting positions one gene plays");
+
+        setParameter (proc, PheParams::geneSize, 0.5f);             // a short gene, so genes come and go quickly
+        feedSilenceLoudest (proc, 50);
+        expect (proc.getEngine().getReelView().voices >= 1, "wrapper (M6): short genes at 1/1");
+
+        setParameter (proc, PheParams::morph, 0.6f);                // 1:00, three at once
+        expect (feedSilenceLoudest (proc, 100) > 0.02f, "wrapper (M6): overlapping genes make sound");
+        {
+            int most = 0;
+            for (int i = 0; i < 40; ++i)
+            {
+                feedSilenceLoudest (proc, 1);
+                most = juce::jmax (most, proc.getEngine().getReelView().voices);
+            }
+            expect (most >= 3 && most <= 4, "wrapper (M6): Morph at 1:00 plays three genes at once (" + juce::String (most) + ")");
+        }
+
+        setParameter (proc, PheParams::morph, 1.0f);                // fully round: four genes, random pitch and pan
+        expect (feedSilenceLoudest (proc, 100) > 0.02f, "wrapper (M6): fully round Morph makes sound");
+        {
+            int most = 0;
+            for (int i = 0; i < 40; ++i)
+            {
+                feedSilenceLoudest (proc, 1);
+                most = juce::jmax (most, proc.getEngine().getReelView().voices);
+            }
+            expect (most >= 4 && most <= 5, "wrapper (M6): fully round Morph plays four genes at once (" + juce::String (most) + ")");
+        }
+
+        setParameter (proc, PheParams::pitchScale, 1.0f / 28.0f);   // Major
+        expect (feedSilenceLoudest (proc, 100) > 0.02f, "wrapper (M6): Pitch Scale (Major) makes sound");
+        expect (proc.getEngine().getParams().pitchScale == 1, "wrapper (M6): the Pitch Scale menu reaches the engine as scale 1");
+        setParameter (proc, PheParams::pitchScale, 1.0f);           // the last scale
+        feedSilenceLoudest (proc, 20);
+        expect (proc.getEngine().getParams().pitchScale == 28, "wrapper (M6): the last Pitch Scale menu entry is scale 28");
+        setParameter (proc, PheParams::pitchScale, 1.0f / 28.0f);
+
+        // Far left: gaps, so some moments are silent and some are not
+        setParameter (proc, PheParams::morph, 0.0f);
+        feedSilenceLoudest (proc, 100);
+        {
+            int silentMoments = 0, soundMoments = 0;
+            for (int i = 0; i < 200; ++i)
+            {
+                feedSilenceLoudest (proc, 1);
+                if (proc.getEngine().getReelView().voices == 0) ++silentMoments; else ++soundMoments;
+            }
+            expect (silentMoments > 10 && soundMoments > 10, "wrapper (M6): Morph far left has gaps (" + juce::String (silentMoments) + " silent, " + juce::String (soundMoments) + " playing)");
+        }
+
+        // A picture with Morph and Pitch Scale set
+        setParameter (proc, PheParams::morph, 0.8f);
+        setParameter (proc, PheParams::geneSize, 0.3f);
+        feedSilenceLoudest (proc, 60);
+        {
+            PhenomeEonEditor editor (proc);
+            editor.showView (PhenomeEonEditor::View::styled);
+            editor.setSize (1200, 800);
+            letWindowThreadRun (150);
+            save (editor, outDir.getChildFile ("styled_morph.png"), 1654.0f / 1200.0f);
+        }
+
+        setParameter (proc, PheParams::clearReel, 1.0f);
+        feedSilenceLoudest (proc, 2);
+        letWindowThreadRun (200);
+        resetAll (proc);
+    }
+
     // ---------------- pictures ----------------
     // Knob positions roughly like the mockup, so the pictures can be compared with it
     const std::map<juce::String, float> mockLike {

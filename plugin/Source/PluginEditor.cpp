@@ -110,7 +110,7 @@ void PhenomeEonSliderPanel::paint (juce::Graphics& g)
 
     g.setColour (kMuted);
     g.setFont (font (13.0f));
-    g.drawText ("Plain slider window (the fallback). Morph, Organize, Pitch Scale and the splice and edit buttons do not work yet.",
+    g.drawText ("Plain slider window (the fallback). Organize and the splice and edit buttons do not work yet.",
                 kLeft, 46, kWidth - 2 * kLeft, 20, juce::Justification::centredLeft);
 
     g.setColour (kAmber);

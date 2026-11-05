@@ -1,5 +1,7 @@
 #include <phe/Engine.h>
 #include <phe/core/Gain.h>
+#include <phe/core/Morph.h>
+#include <phe/core/Scales.h>
 #include <phe/core/VariSpeed.h>
 
 #include <algorithm>
@@ -312,6 +314,7 @@ void Engine::process (float* const* channels, int numChannels, int numSamples)
     viewGeneSpan.store ((int) gene.windowSpan);
     viewGeneSeconds.store ((float) gene.geneSeconds);
     viewRate.store (gene.rate);
+    viewVoices.store (gene.voices);
     viewRecPos.store (recPos);
     viewRecording.store (recActive);
     viewPlaying.store (player.isPlaying() && reel.length() > 0);
@@ -324,6 +327,8 @@ void Engine::setPlayerTargets()
     t.geneSeconds = geneSeconds (params.geneSize, (double) reel.length() / sampleRate);
     t.slide = clamp01 (params.slide);
     t.playWanted = params.play;
+    t.morph = dsp::morphFromKnob (params.morph);
+    t.scaleMask = scales::maskFor (params.pitchScale);
     player.setTargets (t);
 }
 
@@ -339,6 +344,7 @@ Engine::ReelView Engine::getReelView() const
     v.geneSpan        = viewGeneSpan.load();
     v.geneSeconds     = viewGeneSeconds.load();
     v.rate            = viewRate.load();
+    v.voices          = viewVoices.load();
     v.recPos          = viewRecPos.load();
     v.recording       = viewRecording.load();
     v.playing         = viewPlaying.load();

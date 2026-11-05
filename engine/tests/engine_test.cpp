@@ -1,9 +1,11 @@
 // Self-test for the PhenomeEon engine. Run automatically by the build; the build fails if any check fails.
 // Milestone 4: the reel, recording, Sound On Sound and basic playback.
 // Milestone 5: the tape head and genes (Vari-Speed, Gene-Size, Slide) and Pitch Snap.
+// Milestone 6: Morph (gaps, overlaps, random pitch-up and pan) and Pitch Scale.
 
 #include <phe/Engine.h>
 #include <phe/core/Gain.h>
+#include <phe/core/Morph.h>
 #include <phe/core/Scales.h>
 #include <phe/core/VariSpeed.h>
 #include <phe/GenePlayer.h>
@@ -601,6 +603,7 @@ static void testExtremeControlsStayFinite()
         r.p.inputLevel = rnd();   r.p.soundOnSound = rnd();  r.p.outputLevel = rnd();
         r.p.geneSize = rnd();     r.p.variSpeed = rnd();     r.p.morph = rnd();
         r.p.slide = rnd();        r.p.pitchSnap = (int) (rnd() * 2.99f);
+        r.p.pitchScale = (int) (rnd() * 28.99f);
         r.p.inputGainStep = (int) (rnd() * 3.99f);
         r.p.rec = rnd() > 0.7f;   r.p.play = rnd() > 0.3f;   r.p.clearReel = rnd() > 0.97f;
         r.p.splice = r.p.shift = r.p.undo = r.p.eraseSplice = rnd() > 0.5f;
@@ -610,6 +613,8 @@ static void testExtremeControlsStayFinite()
                 if (! std::isfinite (v) || std::fabs (v) > 100.0f) finite = false;
         const int len = r.e.getReelView().lengthSamples;
         if (len < 0 || len > r.e.getReelView().capacitySamples) lengthOk = false;
+        const int voices = r.e.getReelView().voices;
+        if (voices < 0 || voices > 6) lengthOk = false;
     }
     CHECK (finite, "random control changes never make bad sound");
     CHECK (lengthOk, "reel length always stays in range");
@@ -1076,16 +1081,16 @@ static void testRecordSpeedIsConstant()
 
 static void testControlsNotYetUsed()
 {
-    // Morph, Organize, Pitch Scale and the splice buttons are stored but do not change the sound yet.
+    // Organize and the splice buttons are stored but do not change the sound yet.
     Rig a, b;
-    b.p.morph = 1.0f; b.p.organize = 1.0f;
-    b.p.pitchScale = 28; b.p.splice = b.p.shift = true;
+    b.p.organize = 1.0f;
+    b.p.splice = b.p.shift = true;
     a.recordFirstTake (12000, 500);
     b.recordFirstTake (12000, 500);
     const auto oa = a.run (30000, 500, tone);
     const auto ob = b.run (30000, 500, tone);
     CHECK (oa[0] == ob[0] && oa[1] == ob[1], "the controls that are not used yet do not change the sound");
-    CHECK (b.e.getParams().morph == 1.0f && b.e.getParams().organize == 1.0f, "stored control values");
+    CHECK (b.e.getParams().organize == 1.0f, "stored control values");
 }
 
 static void testEdgeCases()
@@ -1149,6 +1154,387 @@ static void testScales()
     }
 }
 
+
+//==============================================================================
+// ---- milestone 6: Morph and Pitch Scale ----
+
+static float constantHalf (int, long long) { return 0.5f; }
+static float pureSine (int, long long t) { return 0.4f * (float) std::sin (0.05 * (double) t); }
+
+static void testMorphLandmarks()
+{
+    using namespace phe::dsp;
+    auto at = [] (float k) { return morphFromKnob (k); };
+
+    const auto far = at (0.0f);
+    CHECK (near (far.spacing, 1.5f) && near (far.gapFraction, 0.5f) && far.genesAtOnce == 1.0f && far.voiceGain == 1.0f,
+           "far left: a gap of half a gene (spacing %f)", far.spacing);
+    const auto one = at (kMorphSeamless);
+    CHECK (one.spacing == 1.0f && one.gapFraction == 0.0f && one.integerPoint, "1/1 is seamless: spacing exactly 1");
+    CHECK (at (kMorphSeamless + 0.006f).spacing == 1.0f && at (kMorphSeamless - 0.006f).spacing == 1.0f,
+           "1/1 is a small flat zone");
+    CHECK (at (0.10f).gapFraction > 0.0f && at (0.10f).spacing > 1.0f, "left of 1/1 there are gaps");
+    CHECK (at (0.30f).spacing < 1.0f && at (0.30f).spacing > 0.5f, "right of 1/1 genes overlap");
+    CHECK (near (at (kMorphTwoAtOnce).spacing, 0.5f) && at (kMorphTwoAtOnce).integerPoint, "2/1 at 12:00");
+    CHECK (near (at (kMorphThreeAtOnce).spacing, 1.0f / 3.0f) && at (kMorphThreeAtOnce).integerPoint, "3/1 at 1:00");
+    CHECK (near (at (kMorphFourthGene).spacing, 1.0f / 3.0f) && at (kMorphFourthGene).pitchRange == 0.0f,
+           "up to 2:30: three at once, no pitch-up yet");
+    CHECK (near (at (kMorphFourthGene).panAmount, 1.0f), "panning is fully in by 2:30");
+    CHECK (at (0.5f).panAmount == 0.0f && at (0.5f).panRandom == 0.0f, "no panning at 12:00");
+    CHECK (near (at (0.65f).spacing, 1.0f / 3.0f), "three at once between 1:00 and 2:30");
+    const auto top = at (1.0f);
+    CHECK (near (top.spacing, 0.25f) && near (top.genesAtOnce, 4.0f) && near (top.pitchRange, 24.0f) && top.panRandom == 1.0f,
+           "fully round: four at once, pitch-up up to two octaves, fully random pan");
+    CHECK (near (top.voiceGain, 0.5f) && near (at (0.5f).voiceGain, 0.70710678f, 1.0e-4f), "equal-power level per gene");
+
+    float previous = 99.0f, previousRange = -1.0f, biggestJump = 0.0f;
+    bool monotone = true;
+    for (int i = 0; i <= 1000; ++i)
+    {
+        const auto m = at ((float) i / 1000.0f);
+        if (m.spacing > previous + 1.0e-6f) monotone = false;
+        if (m.pitchRange < previousRange - 1.0e-6f) monotone = false;
+        if (i > 0) biggestJump = std::max (biggestJump, std::fabs (m.spacing - previous));
+        previous = m.spacing;
+        previousRange = m.pitchRange;
+        if (! (m.spacing >= 0.25f - 1.0e-6f && m.spacing <= 1.5f + 1.0e-6f)) monotone = false;
+    }
+    CHECK (monotone, "turning Morph up never makes the spacing wider or the pitch-up range smaller");
+    CHECK (biggestJump < 0.03f, "no jumps along the knob (biggest %f)", biggestJump);
+    CHECK (at (std::numeric_limits<float>::quiet_NaN()).spacing == 1.0f, "a bad knob value gives 1/1");
+    CHECK (at (-4.0f).spacing == 1.5f && near (at (9.0f).spacing, 0.25f), "knob values outside 0..1 are limited");
+}
+
+static void testRandomPitchUp()
+{
+    using namespace phe::dsp;
+    Random rng;
+    rng.seed (1234);
+    CHECK (randomPitchUp (rng, 0.0f, 0) == 0.0f && randomPitchUp (rng, 0.0f, 0xFFF) == 0.0f, "no range, no pitch-up");
+
+    // Off: any amount from 0 up to the range
+    float lo = 99.0f, hi = -1.0f;
+    for (int i = 0; i < 20000; ++i)
+    {
+        const float v = randomPitchUp (rng, 24.0f, 0);
+        lo = std::min (lo, v);
+        hi = std::max (hi, v);
+    }
+    CHECK (lo >= 0.0f && lo < 0.5f && hi < 24.0f && hi > 23.5f, "no scale: pitch-ups spread over 0..24 (%f .. %f)", lo, hi);
+
+    // A scale: only notes of that scale, and all of them are reached (over two octaves)
+    const int major = phe::scales::maskFor (1);
+    bool seen[25] = {};
+    bool inScale = true;
+    for (int i = 0; i < 20000; ++i)
+    {
+        const float v = randomPitchUp (rng, 24.0f, major);
+        const int semis = (int) v;
+        if (v != (float) semis || semis < 0 || semis > 24 || ((major >> (semis % 12)) & 1) == 0) inScale = false;
+        else seen[semis] = true;
+    }
+    CHECK (inScale, "scale on: every pitch-up is a note of the scale (root, then degrees, up to the range)");
+    bool allReached = true;
+    for (int semis : { 0, 2, 4, 5, 7, 9, 11, 12, 14, 16, 17, 19, 21, 23, 24 })
+        if (! seen[semis]) allReached = false;
+    CHECK (allReached, "and every scale note under the range gets used");
+
+    // A small range allows only the root (and nothing else), so the scale makes every pitch-up exactly zero
+    bool rootOnly = true;
+    for (int i = 0; i < 2000; ++i)
+        if (randomPitchUp (rng, 1.9f, major) != 0.0f) rootOnly = false;
+    CHECK (rootOnly, "range 1.9 with a major scale leaves only the root");
+
+    // Chromatic gives whole semitones; a pentatonic never lands on a semitone next to the root
+    bool whole = true, noOne = true;
+    const int pent = phe::scales::maskFor (17);
+    for (int i = 0; i < 5000; ++i)
+    {
+        const float c = randomPitchUp (rng, 12.0f, 0xFFF);
+        if (c != std::floor (c)) whole = false;
+        if (randomPitchUp (rng, 12.0f, pent) == 1.0f) noOne = false;
+    }
+    CHECK (whole && noOne, "chromatic = whole semitones; pentatonic skips the semitone");
+
+    // Same seed, same numbers
+    Random a, b;
+    a.seed (77); b.seed (77);
+    bool same = true;
+    for (int i = 0; i < 100; ++i)
+        if (a.nextInt() != b.nextInt()) same = false;
+    CHECK (same, "the random source repeats exactly from the same seed");
+}
+
+// Counts how many genes are playing after each sample, over 'n' samples, and the first sample at which each count shows.
+struct VoiceStats { double average = 0.0; int most = 0; double zeroShare = 0.0; std::vector<int> starts; };
+
+// 'warmUp' samples are run first and not counted (genes start one by one, so the count needs a moment to settle).
+static VoiceStats watchVoices (Rig& r, int n, int warmUp = 0)
+{
+    VoiceStats s;
+    long long sum = 0;
+    int zero = 0;
+    r.run (warmUp, 1, silence);
+    int previous = r.e.getReelView().voices;
+    for (int i = 0; i < n; ++i)
+    {
+        r.run (1, 1, silence);
+        const int v = r.e.getReelView().voices;
+        sum += v;
+        s.most = std::max (s.most, v);
+        if (v == 0) ++zero;
+        if (v > 0 && previous == 0) s.starts.push_back (i);
+        previous = v;
+    }
+    s.average = (double) sum / (double) n;
+    s.zeroShare = (double) zero / (double) n;
+    return s;
+}
+
+static void testMorphDefaultIsPlainLoop()
+{
+    CHECK (phe::Params().morph == phe::kDefaultMorph && phe::kDefaultMorph == phe::dsp::kMorphSeamless,
+           "a new PhenomeEon starts with Morph at 1/1");
+    Rig a, b;
+    a.recordFirstTake (20000, 500);
+    b.recordFirstTake (20000, 500);
+    b.p.morph = phe::dsp::kMorphSeamless + 0.005f;          // inside the flat 1/1 zone
+    const auto oa = a.run (60000, 500, silence);
+    const auto ob = b.run (60000, 500, silence);
+    CHECK (oa[0] == ob[0] && oa[1] == ob[1], "anywhere in the 1/1 zone sounds exactly the same");
+    CHECK (a.e.getReelView().voices == 1, "one gene at a time at 1/1");
+}
+
+static void testMorphGapsAndOverlaps()
+{
+    const int n = 96000;
+    const float knob = 0.4f;
+    const double G = phe::geneSeconds (knob, (double) n / 48000.0) * 48000.0;     // gene length in samples
+
+    // Watches a whole number of start-to-start cycles (about 'about' samples), after a warm-up.
+    auto watch = [&] (float morph, int about)
+    {
+        Rig r;
+        r.recordFirstTake (n, 500);
+        r.p.geneSize = knob;
+        r.p.morph = morph;
+        startFreshFromControls (r, n);
+        const double cycle = G * (double) phe::dsp::morphFromKnob (morph).spacing;
+        const int cycles = std::max (1, (int) std::floor ((double) about / cycle));
+        return watchVoices (r, (int) std::llround ((double) cycles * cycle), (int) (G * 1.3));
+    };
+
+    // 1/1: always exactly one gene
+    {
+        const auto s = watch (phe::dsp::kMorphSeamless, 30000);
+        CHECK (s.most == 1 && s.zeroShare < 0.001, "1/1: one gene, no silence between (most %d, silent share %f)", s.most, s.zeroShare);
+    }
+    // Far left: gaps of half a gene, so genes start every 1.5 gene lengths and a third of the time is silent
+    {
+        const auto s = watch (0.0f, 60000);
+        CHECK (s.most == 1 && std::fabs (s.zeroShare - 1.0 / 3.0) < 0.01, "gaps: silent share %f (about a third)", s.zeroShare);
+        double worst = 0.0;
+        for (size_t k = 1; k < s.starts.size(); ++k)
+            worst = std::max (worst, std::fabs ((double) (s.starts[k] - s.starts[k - 1]) - 1.5 * G));
+        CHECK (s.starts.size() >= 6 && worst < 2.0, "genes start every 1.5 gene lengths (%zu starts, off by %.2f samples)", s.starts.size(), worst);
+    }
+    // Overlaps: on average 1/spacing genes play at the same moment, never more than four
+    struct Case { float morph; double expect; int most; };
+    for (const Case& c : { Case { 0.30f, 1.0 / 0.8125, 2 }, Case { 0.50f, 2.0, 3 }, Case { 0.60f, 3.0, 4 },
+                           Case { 0.70f, 3.0, 4 }, Case { 0.875f, 3.0 + 0.0, 5 }, Case { 1.0f, 4.0, 5 } })
+    {
+        const auto s = watch (c.morph, 40000);
+        const double expect = phe::dsp::morphFromKnob (c.morph).genesAtOnce;
+        CHECK (std::fabs (s.average - expect) < 0.04, "morph %.3f: %.2f genes at once on average (want %.2f)", c.morph, s.average, expect);
+        CHECK (s.most <= c.most && s.most >= (int) expect, "morph %.3f: at most %d at the same moment (saw %d)", c.morph, c.most, s.most);
+    }
+}
+
+static void testMorphWholeReelAndBackwards()
+{
+    const int n = 24000;
+    // A whole-reel gene is one lap of the tape, so a lap lasts n / speed samples. Watches 3 start-to-start cycles.
+    auto watch = [&] (float morph, float variKnob, double speed)
+    {
+        Rig r;
+        r.recordFirstTake (n, 500);
+        r.p.morph = morph;
+        r.p.variSpeed = variKnob;
+        startFreshFromControls (r, n);
+        const double lap = (double) n / speed;
+        const double cycle = lap * (double) phe::dsp::morphFromKnob (morph).spacing;
+        return watchVoices (r, (int) std::llround (3.0 * cycle), (int) (lap * 1.1));
+    };
+
+    const auto gap = watch (0.0f, 0.75f, 1.0);
+    CHECK (gap.most == 1 && std::fabs (gap.zeroShare - 1.0 / 3.0) < 0.01, "whole reel, gaps: silent share %f", gap.zeroShare);
+    const auto two = watch (0.5f, 0.75f, 1.0);
+    CHECK (std::fabs (two.average - 2.0) < 0.04, "whole reel, 2/1: %.2f at once", two.average);
+    const auto back = watch (0.5f, 0.25f, 1.0);
+    CHECK (std::fabs (back.average - 2.0) < 0.04, "backwards, 2/1: %.2f at once", back.average);
+    const auto fast = watch (0.5f, 1.0f, 2.0);
+    CHECK (std::fabs (fast.average - 2.0) < 0.04, "double speed, 2/1: %.2f at once", fast.average);
+}
+
+static void testMorphLevelAndPanning()
+{
+    const int n = 96000;
+    auto run = [&] (float morph, double& peak, double& rms, double& widest, double& leftOnly)
+    {
+        Rig r;
+        r.recordFirstTake (n, 500, constantHalf);
+        r.p.geneSize = 0.4f;
+        r.p.morph = morph;
+        startFreshFromControls (r, n);
+        const auto out = r.run (40000, 500, silence);
+        peak = 0.0; rms = 0.0; widest = 0.0; leftOnly = 0.0;
+        double sum = 0.0;
+        for (size_t i = 0; i < out[0].size(); ++i)
+        {
+            peak = std::max (peak, (double) std::max (std::fabs (out[0][i]), std::fabs (out[1][i])));
+            sum += (double) out[0][i] * (double) out[0][i];
+            widest = std::max (widest, (double) std::fabs (out[0][i] - out[1][i]));
+        }
+        rms = std::sqrt (sum / (double) out[0].size());
+    };
+
+    double peak1, rms1, wide1, x;
+    run (phe::dsp::kMorphSeamless, peak1, rms1, wide1, x);
+    CHECK (peak1 <= 0.5001 && wide1 == 0.0, "1/1: plain loop, centre (peak %f)", peak1);
+
+    double peak2, rms2, wide2;
+    run (0.5f, peak2, rms2, wide2, x);
+    CHECK (peak2 <= 0.5 * 2.0 * 0.7072 + 1.0e-3, "2/1: each gene turned down, so two together stay moderate (peak %f)", peak2);
+    CHECK (rms2 / rms1 > 1.0 && rms2 / rms1 < 1.6, "2/1 level is steady, a little above 1/1 (ratio %f)", rms2 / rms1);
+    CHECK (wide2 == 0.0, "no panning at 12:00");
+
+    double peak3, rms3, wide3;
+    run (0.6f, peak3, rms3, wide3, x);
+    CHECK (peak3 <= 0.5 * 3.0 * 0.5775 + 1.0e-3 && rms3 / rms1 < 1.9, "3/1: steady level (ratio %f)", rms3 / rms1);
+
+    double peak4, rms4, wide4;
+    run (0.75f, peak4, rms4, wide4, x);
+    CHECK (wide4 > 0.15, "at 2:30 the genes are spread across the stereo picture (left-right difference %f)", wide4);
+    double peak5, rms5, wide5;
+    run (1.0f, peak5, rms5, wide5, x);
+    CHECK (wide5 > 0.15 && peak5 < 1.1, "fully round: random places, still moderate level (peak %f)", peak5);
+}
+
+// How often the signal crosses zero per sample: a pure sine at the reel's pitch gives omega / pi.
+static double crossingRate (const std::vector<float>& v)
+{
+    int crossings = 0;
+    for (size_t i = 1; i < v.size(); ++i)
+        if ((v[i - 1] < 0.0f) != (v[i] < 0.0f)) ++crossings;
+    return (double) crossings / (double) v.size();
+}
+
+static void testMorphPitchUpAndPitchScale()
+{
+    const int n = 96000;
+    const double plain = 0.05 / 3.14159265358979;       // zero crossings per sample of the recorded sine
+
+    auto play = [&] (float morph, int scale, float variKnob, int blockSize = 500, int samples = 60000)
+    {
+        Rig r;
+        r.recordFirstTake (n, 500, pureSine);
+        r.p.geneSize = 0.4f;
+        r.p.morph = morph;
+        r.p.pitchScale = scale;
+        r.p.variSpeed = variKnob;
+        startFreshFromControls (r, n);
+        return r.run (samples, blockSize, silence);
+    };
+
+    // Below 2:30 there are no pitch-ups, so Pitch Scale changes nothing
+    {
+        const auto off = play (0.6f, 0, 0.75f);
+        const auto scale = play (0.6f, 28, 0.75f);
+        CHECK (off[0] == scale[0] && off[1] == scale[1], "below 2:30 Pitch Scale makes no difference");
+        CHECK (std::fabs (crossingRate (off[0]) / plain - 1.0) < 0.06, "three genes at the reel's own pitch stay at that pitch (%f)", crossingRate (off[0]) / plain);
+    }
+    // Fully round, no scale: random pitch-ups make the sound clearly higher
+    const auto wild = play (1.0f, 0, 0.75f);
+    CHECK (crossingRate (wild[0]) / plain > 1.3, "fully round: pitched up (%f times the plain rate)", crossingRate (wild[0]) / plain);
+
+    // A scale changes which pitches are used
+    const auto wildMajor = play (1.0f, 1, 0.75f);
+    CHECK (wild[0] != wildMajor[0], "Pitch Scale changes the random pitch-ups");
+    CHECK (crossingRate (wildMajor[0]) / plain > 1.3, "still higher with a scale (%f)", crossingRate (wildMajor[0]) / plain);
+
+    // Pitch-ups are built on the note Vari-Speed plays: with a tiny range and a scale every pitch-up is zero, so the
+    // sound is exactly the tape's own pitch, here double speed (one octave up)
+    const auto octave = play (0.76f, 1, 1.0f);
+    CHECK (std::fabs (crossingRate (octave[0]) / (2.0 * plain) - 1.0) < 0.06,
+           "root = the current Vari-Speed note: an octave up stays an octave up (%f)", crossingRate (octave[0]) / (2.0 * plain));
+
+    // Always the same, whatever the block size (the random numbers belong to the genes, not the blocks)
+    const auto big = play (1.0f, 5, 0.75f, 500, 20000);
+    const auto tiny = play (1.0f, 5, 0.75f, 1, 20000);
+    CHECK (big[0] == tiny[0] && big[1] == tiny[1], "random pitch-ups and places do not depend on the block size");
+    const auto again = play (1.0f, 5, 0.75f, 500, 20000);
+    CHECK (big[0] == again[0], "starting again gives the same random sequence");
+}
+
+static void testMorphPlayOffStoppedAndRecording()
+{
+    const int n = 48000;
+    const double G = phe::geneSeconds (0.55f, (double) n / 48000.0) * 48000.0;
+
+    // Play off with genes overlapping: every gene in progress finishes, then silence
+    {
+        Rig r;
+        r.recordFirstTake (n, 500);
+        r.p.geneSize = 0.55f;
+        r.p.morph = 0.6f;
+        startFreshFromControls (r, n);
+        r.run ((int) (G * 3.3), 1, silence);
+        CHECK (r.e.getReelView().voices >= 3, "three genes playing before Play goes off");
+        r.p.play = false;
+        const auto tail = r.run ((int) (G * 2) + 500, 1, silence);
+        CHECK (! r.e.getReelView().playing && r.e.getReelView().voices == 0, "Play off: all genes finish, then it stops");
+        bool quiet = true;
+        for (size_t i = (size_t) G + 300; i < tail[0].size(); ++i)
+            if (tail[0][i] != 0.0f) quiet = false;
+        CHECK (quiet, "silent after the last gene");
+        // and Play on again starts afresh with one gene
+        r.p.play = true;
+        r.run (10, 1, silence);
+        CHECK (r.e.getReelView().playing && r.e.getReelView().voices == 1, "Play on starts one fresh gene");
+    }
+    // Stopped tape: nothing plays and nothing piles up
+    {
+        Rig r;
+        r.recordFirstTake (n, 500);
+        r.p.geneSize = 0.55f;
+        r.p.morph = 0.9f;
+        r.p.variSpeed = 0.5f;
+        startFreshFromControls (r, n);
+        const auto out = r.run (20000, 500, silence);
+        bool quiet = true;
+        for (size_t i = 6000; i < out[0].size(); ++i)
+            if (out[0][i] != 0.0f || out[1][i] != 0.0f) quiet = false;
+        CHECK (quiet, "a stopped tape is silent at any Morph setting");
+        CHECK (r.e.getReelView().voices <= 1, "and no genes pile up while it is stopped");
+    }
+    // Recording keeps working at constant speed while Morph overlaps genes: the reel length never changes and what is
+    // recorded is the heard mix
+    {
+        Rig r;
+        r.recordFirstTake (n, 500);
+        r.p.geneSize = 0.55f;
+        r.p.morph = 0.6f;
+        r.p.soundOnSound = 1.0f;
+        r.p.rec = true;
+        const auto out = r.run (60000, 500, tone);
+        r.p.rec = false;
+        r.run (500, 500, silence);
+        bool finite = true;
+        for (float v : out[0]) if (! std::isfinite (v) || std::fabs (v) > 4.0f) finite = false;
+        CHECK (finite && r.e.getReelView().lengthSamples == n, "recording while genes overlap: reel length unchanged, sound sane");
+    }
+}
+
 int main()
 {
     testPassThroughWhenEmpty();
@@ -1178,6 +1564,14 @@ int main()
     testPitchSnapInEngine();
     testRecordSpeedIsConstant();
     testControlsNotYetUsed();
+    testMorphLandmarks();
+    testRandomPitchUp();
+    testMorphDefaultIsPlainLoop();
+    testMorphGapsAndOverlaps();
+    testMorphWholeReelAndBackwards();
+    testMorphLevelAndPanning();
+    testMorphPitchUpAndPitchScale();
+    testMorphPlayOffStoppedAndRecording();
     testEdgeCases();
     testGainSteps();
     testScales();

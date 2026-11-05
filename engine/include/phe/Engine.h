@@ -1,6 +1,7 @@
 // The PhenomeEon audio engine.
 //
-// Milestone 5: the tape head and genes, on top of milestone 4 (the reel, recording, Sound On Sound, Clear Reel).
+// Milestone 6: Morph and Pitch Scale, on top of milestone 5 (the tape head and genes) and milestone 4 (the reel,
+// recording, Sound On Sound, Clear Reel).
 //
 //   - The reel is one stereo strip of up to 2.9 minutes (see Reel.h).
 //   - Rec on an empty reel makes the first recording: the reel is as long as the recording (or fills up to
@@ -10,7 +11,9 @@
 //   - Sound On Sound blends the live input with the reel loop. What you hear is exactly what is recorded.
 //   - Play makes the tape head read the reel (GenePlayer.h): Vari-Speed sets the speed and direction (and Pitch Snap
 //     makes it land on notes), Gene-Size how long a gene is, Slide where it starts. The defaults give plain 1/1 looping.
-//     (Morph, splices and Organize come in milestones 6 and 7.)
+//     Morph sets how genes follow each other (gaps, seamless 1/1, overlaps of two, three and four) and, far round the knob,
+//     gives each new gene a random pitch-up and place in the stereo picture; Pitch Scale limits those pitch-ups to a scale.
+//     (Splices and Organize come in milestone 7.)
 //
 // Plain C++17. No JUCE, no plugin code.
 
@@ -55,6 +58,7 @@ namespace phe
             int geneSpan = 0;
             float geneSeconds = 0.0f;    // length of a gene in seconds; 0 = the whole reel
             float rate = 0.0f;           // tape speed now (signed; negative = backwards)
+            int voices = 0;              // how many genes are playing at this moment
             int recPos = 0;              // record head
             bool recording = false;
             bool playing = false;
@@ -101,7 +105,7 @@ namespace phe
         float peakL = 0.0f, peakR = 0.0f;
 
         // For the window and the wrapper
-        std::atomic<int> viewPlayPos { 0 }, viewRecPos { 0 }, viewGeneStart { 0 }, viewGeneSpan { 0 };
+        std::atomic<int> viewPlayPos { 0 }, viewRecPos { 0 }, viewGeneStart { 0 }, viewGeneSpan { 0 }, viewVoices { 0 };
         std::atomic<float> viewGeneSeconds { 0.0f }, viewRate { 0.0f };
         std::atomic<bool> viewRecording { false }, viewPlaying { false };
         std::atomic<bool> recordStopped { false }, clearHandled { false };

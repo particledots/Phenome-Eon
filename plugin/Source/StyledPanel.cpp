@@ -1,5 +1,6 @@
 #include "StyledPanel.h"
 #include <phe/core/Gain.h>
+#include <phe/core/Morph.h>
 #include <phe/core/VariSpeed.h>
 #include <phe/GenePlayer.h>
 #include <cmath>
@@ -83,6 +84,21 @@ namespace
             return direction + (st > 0 ? "+" : "") + juce::String (st) + " st";
         }
         return juce::String (r.rate > 0.0f ? "+" : "-") + juce::String (std::fabs (r.rate), 2) + "x";
+    }
+
+    // Morph read-out: "gap 30%" (silence between genes, as a share of a gene), "1/1" (seamless), "2.4/1" (genes at once),
+    // and past 2:30 also the highest random pitch-up in semitones ("3.6/1 +12st").
+    juce::String morphText (double value)
+    {
+        const auto m = phe::dsp::morphFromKnob ((float) value);
+        if (m.gapFraction > 0.0f)
+            return "gap " + juce::String (juce::roundToInt (m.gapFraction * 100.0f)) + "%";
+        juce::String text = m.integerPoint || m.genesAtOnce < 1.05f
+                                ? juce::String (juce::roundToInt (m.genesAtOnce)) + "/1"
+                                : juce::String (m.genesAtOnce, 1) + "/1";
+        if (m.pitchRange >= 0.5f)
+            text += " +" + juce::String (juce::roundToInt (m.pitchRange)) + "st";
+        return text;
     }
 
     // ---- layout, in the fixed 1200 x 800 space (measured from the approved mockup) ----
@@ -170,6 +186,7 @@ void ReelDisplay::paint (juce::Graphics& g)
             { "REEL",     minutesSeconds (reelLength) + " / " + minutesSeconds (kReelSeconds), text },
             { "SPLICE",   demo ? "3 / 5" : (haveReel ? "1 / 1" : "-"),    amber },
             { "GENE",     demo ? "4.5 s" : (haveReel ? (view.geneSeconds > 0.0f ? geneLengthText ((double) view.geneSeconds) : juce::String ("whole")) : juce::String ("-")), amber },
+            { "GENES",    demo ? "3" : (view.playing ? juce::String (view.voices) : juce::String ("-")), amber },
             { "PLAYHEAD", minutesSeconds (playhead) + "." + juce::String ((int) std::floor ((playhead - std::floor (playhead)) * 10.0)), text },
             { "STATE",    demo ? "PLAY" : state,   demo ? text : stateColour },
         };
@@ -556,7 +573,7 @@ StyledPanel::StyledPanel (juce::AudioProcessorValueTreeState& s, juce::AudioProc
                                const int snap = juce::jlimit (0, 2, (int) std::lround (state.getRawParameterValue (PheParams::pitchSnap)->load()));
                                return variSpeedText (v, snap);
                            });
-    auto& morph = addKnob (PheParams::morph,     "MORPH",      KnobCard::Size::large);
+    auto& morph = addKnob (PheParams::morph,     "MORPH",      KnobCard::Size::large, morphText);
     addKnob (PheParams::organize,    "ORGANIZE",     KnobCard::Size::small);
     auto& output = addKnob (PheParams::outputLevel, "OUTPUT LEVEL", KnobCard::Size::small, levelText);
 
@@ -583,7 +600,7 @@ StyledPanel::StyledPanel (juce::AudioProcessorValueTreeState& s, juce::AudioProc
     auto& scale = makeChoice (PheParams::pitchScale);
     morph.addNote ("PITCH SCALE", { 0, 186, kCardWidth, 22 }, juce::Justification::centred);
     morph.addExtra (scale.box, { 7, 212, 125, 33 });
-    morph.addNote ("Off + 28 scales (random\npitch-up genes)", { 1, 249, 137, 38 }, juce::Justification::centred);
+    morph.addNote ("pitch-ups past 2:30\nstay in this scale", { 1, 249, 137, 38 }, juce::Justification::centred);
 
     // ---- buttons ----
     addPanelButton (PheParams::rec,              "REC", true);
@@ -722,7 +739,7 @@ void StyledPanel::paint (juce::Graphics& g)
 
     // Footer
     g.setFont (mono (14.0f));
-    g.drawText ("PhenomeEon v" + versionText + "  -  Morph, Organize, splices and the file buttons do not work yet",
+    g.drawText ("PhenomeEon v" + versionText + "  -  Organize, splices and the file buttons do not work yet",
                 juce::Rectangle<int> (kMargin, 757, 900, 28), juce::Justification::centredLeft, false);
 }
 

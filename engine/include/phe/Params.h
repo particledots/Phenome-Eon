@@ -7,8 +7,8 @@
 // Knobs run 0.0 to 1.0. What each position means (decibels, seconds, semitones, percent) is decided inside the
 // engine when each control gets its sound. Milestone 4 gave meaning to Input Level, Sound On Sound and Output
 // Level, to the Input Gain Step menu, and to the Rec, Play and Clear Reel buttons. Milestone 5 adds Vari-Speed,
-// Gene-Size, Slide and the Pitch Snap menu. The other controls are accepted and stored but do not change the sound
-// yet (milestones 6 to 8).
+// Gene-Size, Slide and the Pitch Snap menu. Milestone 6 adds Morph and the Pitch Scale menu. The other controls are
+// accepted and stored but do not change the sound yet (milestones 7 and 8).
 
 #pragma once
 
@@ -22,6 +22,7 @@ namespace phe
     inline constexpr float kDefaultGeneSize     = 0.0f;    // fully left: a gene is the whole reel
     inline constexpr float kDefaultSlide        = 0.0f;    // fully left: genes start at the start of the reel
     inline constexpr float kDefaultVariSpeed    = 0.75f;   // original speed, forwards (the "2:30" position)
+    inline constexpr float kDefaultMorph        = 0.18f;   // exactly 1/1: genes follow each other with no gap or overlap
 
     struct Params
     {
@@ -31,14 +32,14 @@ namespace phe
         float geneSize     = kDefaultGeneSize;
         float slide        = kDefaultSlide;
         float variSpeed    = kDefaultVariSpeed;
-        float morph        = 0.5f;
+        float morph        = kDefaultMorph;
         float organize     = 0.5f;
         float outputLevel  = kDefaultOutputLevel;
 
         // Menus
         int inputGainStep = 1;     // 0..3 = -3, 0, +6, +12 dB (see kInputGainStepDb)
         int pitchSnap     = 0;     // 0 Off, 1 Steps, 2 Semitones (lands Vari-Speed on notes)
-        int pitchScale    = 0;     // 0 Off, 1..28 = the scales in core/Scales.h
+        int pitchScale    = 0;     // 0 Off, 1..28 = the scales in core/Scales.h (limits Morph's random pitch-up genes)
 
         // Buttons (on = true).
         //   rec:        on = recording, off = not recording (a switch).
