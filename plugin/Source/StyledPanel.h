@@ -101,6 +101,9 @@ public:
 
     // A small piece of text drawn inside the card, and a child control placed inside the card.
     void addNote (const juce::String& text, juce::Rectangle<int> area, juce::Justification);
+
+    // Changes the text of a note added earlier (0 = the first one added); redraws only if it changed.
+    void setNoteText (size_t index, const juce::String& text);
     void addExtra (juce::Component&, juce::Rectangle<int> area);
 
     const char* getParameterId() const { return parameterId; }
@@ -120,6 +123,31 @@ private:
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> attachment;   // after the slider: destroyed first
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (KnobCard)
+};
+
+//==============================================================================
+// The Options sheet (milestone 8): the six firmware-option menus, each with a plain-language line of explanation.
+// It covers the panel while open; the menus are attached to the same parameters as in the plain-slider window.
+class OptionsSheet : public juce::Component
+{
+public:
+    OptionsSheet();
+
+    // Adds one row: a title, the menu (owned by the panel) and a line explaining what the choices do.
+    void addRow (const juce::String& title, juce::ComboBox& box, const juce::String& explanation);
+
+    std::function<void()> onClose;
+
+    void paint (juce::Graphics&) override;
+    void resized() override;
+    void mouseDown (const juce::MouseEvent&) override {}      // clicks on the sheet do not reach the panel underneath
+
+private:
+    struct Row { juce::String title, explanation; juce::ComboBox* box; };
+    std::vector<Row> rows;
+    juce::TextButton close { "CLOSE" };
+
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (OptionsSheet)
 };
 
 //==============================================================================
@@ -145,6 +173,10 @@ public:
     const std::vector<juce::String>& controlledParameterIds() const { return controlIds; }
 
     ReelDisplay& getReelDisplay() { return reel; }
+
+    // The Options sheet (open / close), also used by the automatic checks.
+    void showOptions (bool shouldShow);
+    bool optionsShowing() const { return options.isVisible(); }
 
 private:
     using ComboBoxAttachment = juce::AudioProcessorValueTreeState::ComboBoxAttachment;
@@ -172,6 +204,11 @@ private:
     // Reel file buttons: shown as in the mockup but not usable until milestone 9.
     juce::TextButton loadWav { "Load WAV" }, saveWav { "Save WAV" }, reelFolder { "Reel folder" };
     juce::TextButton plainSliders { "PLAIN SLIDERS" };
+    juce::TextButton optionsButton { "OPTIONS" };
+    OptionsSheet options;
+    KnobCard* variCard = nullptr;
+    int shownVariMode = -1;
+    int shownUndoState = -1;
 
     double shownRate = -1.0;
     int shownChannels = -1;

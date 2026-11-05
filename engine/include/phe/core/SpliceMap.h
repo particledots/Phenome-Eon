@@ -99,6 +99,41 @@ namespace phe::core
             return true;
         }
 
+        // Takes splice j out of the reel altogether (its audio is removed and everything after it moves up by its length).
+        // Splice j's closing marker goes (or, for the last splice, the marker in front of it) and every later marker moves
+        // earlier by the splice's length. 'totalLength' is the length of the reel before the removal. Returns false if
+        // there is only one splice (nothing to join) or no such splice.
+        bool eraseSplice (int j, int totalLength)
+        {
+            const int n = numMarkers();
+            if (n <= 0 || j < 0 || j > n)
+                return false;
+
+            const int len = length (j, totalLength);
+            beginWrite();
+            if (j < n)
+            {
+                for (int k = j; k < n - 1; ++k)
+                    markers[k].store (markers[k + 1].load (std::memory_order_relaxed) - len, std::memory_order_relaxed);
+                count.store (n - 1, std::memory_order_relaxed);
+            }
+            else
+                count.store (n - 1, std::memory_order_relaxed);       // the last splice: the marker in front of it goes
+            endWrite();
+            return true;
+        }
+
+        // Replaces every marker (used by Undo). Markers must be in rising order.
+        void setMarkers (const int* in, int n)
+        {
+            n = std::max (0, std::min (n, kMaxSpliceMarkers));
+            beginWrite();
+            for (int i = 0; i < n; ++i)
+                markers[i].store (in[i], std::memory_order_relaxed);
+            count.store (n, std::memory_order_relaxed);
+            endWrite();
+        }
+
         // The reel was converted to another sample rate: moves every marker by the same ratio, and drops any that no
         // longer fit (too close to a neighbour or to the end).
         void rescale (double ratio, int totalLength)

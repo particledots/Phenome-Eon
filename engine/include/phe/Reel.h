@@ -35,6 +35,10 @@ namespace phe
             peaks.clear();
         }
 
+        // The raw memory of a channel (for the undo store and for moving audio about). Index 0..capacity()-1.
+        float* channel (int c) { return data[c & 1].get(); }
+        const float* channel (int c) const { return data[c & 1].get(); }
+
         float get (int channel, int index) const { return data[channel & 1].get()[index]; }
         void  set (int channel, int index, float value) { data[channel & 1].get()[index] = value; }
 
@@ -56,6 +60,10 @@ namespace phe
         // Brings the picture back in line after audio from 'fromSample' on was thrown away: redraws the slice that
         // contains it (from the audio that is still there) and blanks the slices after it. Cheap enough for the audio thread.
         void refreshPeaksFrom (int fromSample);
+
+        // Redraws waveform slices [fromBucket, toBucket) from the audio: slices that lie past the end of the reel become empty.
+        // Used after an Undo or an Erase Splice, a few slices at a time.
+        void rebuildPeakBuckets (int fromBucket, int toBucket);
 
     private:
         struct FreeDeleter { void operator() (float* p) const { std::free (p); } };

@@ -78,6 +78,13 @@ void GenePlayer::switchSplice (const Reel& reel)
     spawnVoice (0.0, targets.geneSeconds <= 0.0, reel);
 }
 
+void GenePlayer::release()
+{
+    for (auto& v : voices)
+        if (v.active)
+            v.releasing = true;
+}
+
 int GenePlayer::activeVoices() const
 {
     int n = 0;
@@ -142,7 +149,11 @@ void GenePlayer::spawnVoice (double overshoot, bool whole, const Reel& reel)
         v.age = overshoot;
 
     // Random pitch-up (Morph past 2:30), kept to the Pitch Scale if one is chosen. Always built on the tape's own speed.
-    const float up = dsp::randomPitchUp (rng, targets.morph.pitchRange, targets.scaleMask);
+    // With a Morph Chord chosen the pitch-ups are fixed steps taken in turn (gene 1 at the tape's own pitch, then the chord's
+    // three steps) whenever Morph is past 2:30; the random number is still drawn, so everything else stays the same.
+    float up = dsp::randomPitchUp (rng, targets.morph.pitchRange, targets.scaleMask);
+    if (targets.chordMode > 0 && targets.chordMode < dsp::kNumMorphChords && targets.morph.pitchRange > 0.0f)
+        up = dsp::kMorphChords[targets.chordMode].semitones[spawnCount % 4];
     v.mult = up > 0.0f ? std::exp2 (up / 12.0f) : 1.0f;
 
     // Place in the stereo picture: a fixed rotation (left, right, centre ...) that turns into random places further
@@ -272,7 +283,8 @@ GenePlayer::Out GenePlayer::step (const Reel& reel)
 
         const double progress = whole ? std::fabs (v.qBase) : v.age;
         const int fadeLength = (int) std::min (whole ? v.len : geneLength, 2.0e9);
-        const float fade = dsp::edgeFade (progress, fadeLength, fadeSamples);
+        // Gene Window option: a short gene fades in and out over its whole length (the fade is as long as the gene allows)
+        const float fade = dsp::edgeFade (progress, fadeLength, (targets.smoothWindow && ! whole) ? fadeLength : fadeSamples);
 
         const float vg = g * v.releaseGain;
         const float heardL = sampleL * fade * vg * v.gainL;

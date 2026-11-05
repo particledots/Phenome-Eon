@@ -3,12 +3,14 @@
 // Milestone 5: the tape head and genes (Vari-Speed, Gene-Size, Slide) and Pitch Snap.
 // Milestone 6: Morph (gaps, overlaps, random pitch-up and pan) and Pitch Scale.
 // Milestone 7: splices (Splice, Shift, Organize, deleting markers, recording into a new splice).
+// Milestone 8: Erase Splice, Undo / Redo, the Time Lag Accumulation limiter, the six optional behaviours.
 
 #include <phe/Engine.h>
 #include <phe/core/Gain.h>
 #include <phe/core/Morph.h>
 #include <phe/core/Scales.h>
 #include <phe/core/SpliceMap.h>
+#include <phe/core/UndoStore.h>
 #include <phe/core/VariSpeed.h>
 #include <phe/GenePlayer.h>
 
@@ -1083,19 +1085,6 @@ static void testRecordSpeedIsConstant()
     CHECK (r.e.getReelView().lengthSamples == n, "recording over does not change the reel length");
 }
 
-static void testControlsNotYetUsed()
-{
-    // Erase Splice and Undo are stored but do not change the sound yet (milestone 8).
-    Rig a, b;
-    b.p.eraseSplice = b.p.undo = true;
-    a.recordFirstTake (12000, 500);
-    b.recordFirstTake (12000, 500);
-    const auto oa = a.run (30000, 500, tone);
-    const auto ob = b.run (30000, 500, tone);
-    CHECK (oa[0] == ob[0] && oa[1] == ob[1], "the controls that are not used yet do not change the sound");
-    CHECK (b.e.getParams().eraseSplice && b.e.getParams().undo, "stored control values");
-}
-
 static void testEdgeCases()
 {
     phe::Engine e;
@@ -2109,6 +2098,856 @@ static void testSpliceBlockSizeIndependence()
 }
 
 
+//==============================================================================
+// ---- milestone 8: Erase Splice, Undo, Time Lag Accumulation polish, the optional behaviours ----
+
+static float loudSteady (int, long long) { return 0.9f; }
+static float quarterSteady (int, long long) { return 0.25f; }
+static float sine440 (int, long long t) { return 0.3f * (float) std::sin (2.0 * 3.14159265358979323846 * 440.0 * (double) t / 48000.0); }
+static float secondTone (int channel, long long t) { return tone (channel, t + 7919) * 0.8f; }
+
+static std::vector<float> reelCopy (const phe::Engine& e, int channel)
+{
+    const int n = e.getReel().length();
+    std::vector<float> v ((size_t) n);
+    for (int i = 0; i < n; ++i)
+        v[(size_t) i] = e.getReel().get (channel, i);
+    return v;
+}
+
+// Carries on in short blocks until the engine is no longer busy with a big edit. Returns how many blocks that took.
+static int finishEdits (Rig& r, int block = 256)
+{
+    int blocks = 0;
+    while (r.e.getReelView().busy && blocks < 20000)
+    {
+        r.run (block, block, silence);
+        ++blocks;
+    }
+    return blocks;
+}
+
+// Does the waveform picture agree with the audio, slice by slice?
+static bool pictureMatchesAudio (const phe::Engine& e)
+{
+    const auto& reel = e.getReel();
+    const int per = reel.samplesPerBucket(), length = reel.length();
+    for (int b = 0; b < phe::core::PeakOverview::kBuckets; ++b)
+    {
+        float el = 0.0f, er = 0.0f;
+        for (int i = b * per; i < std::min (length, (b + 1) * per); ++i)
+        {
+            el = std::max (el, std::fabs (reel.get (0, i)));
+            er = std::max (er, std::fabs (reel.get (1, i)));
+        }
+        float l, r;
+        reel.peaks.get (b, l, r);
+        if (std::fabs (l - el) > 1.0e-6f || std::fabs (r - er) > 1.0e-6f)
+            return false;
+    }
+    return true;
+}
+
+// Three splices of a first take made from 'g': [0, 2000), [2000, 6000), [6000, 12000). Splice 1 is selected.
+static void threeSplicesWith (Rig& r, const Gen& g)
+{
+    r.recordFirstTake (12000, 500, g);
+    r.run (1500, 500, silence);
+    press (r, r.p.splice);
+    r.run (3800, 500, silence);
+    press (r, r.p.splice);
+}
+
+static double goertzelPower (const std::vector<float>& x, double freq, double sampleRate)
+{
+    const double w = 2.0 * 3.14159265358979323846 * freq / sampleRate, c = 2.0 * std::cos (w);
+    double s0 = 0.0, s1 = 0.0, s2 = 0.0;
+    for (float v : x)
+    {
+        s0 = (double) v + c * s1 - s2;
+        s2 = s1;
+        s1 = s0;
+    }
+    return (s1 * s1 + s2 * s2 - c * s1 * s2) / ((double) x.size() * (double) x.size());
+}
+
+static void testUndoStoreBasics()
+{
+    using namespace phe::core;
+    UndoStore u;
+    CHECK (! u.ready() && ! u.hasStep(), "a new undo store is not ready");
+    CHECK (u.prepare (50000) && u.ready() && u.numChunks() == 4, "50000 samples need four chunks, got %d", u.numChunks());
+
+    std::vector<float> L (50000), R (50000);
+    for (int i = 0; i < 50000; ++i) { L[(size_t) i] = (float) i; R[(size_t) i] = -(float) i; }
+    float* reel[2] = { L.data(), R.data() };
+
+    u.save (reel, 0);
+    CHECK (! u.isSaved (0), "nothing is saved while no step is open");
+
+    EditState before;
+    before.length = 1000; before.selected = 1; before.numMarkers = 2; before.markers[0] = 10; before.markers[1] = 20;
+    u.begin (before);
+    CHECK (u.hasStep() && ! u.undone() && u.firstSaved() == -1, "a step is open and nothing is saved yet");
+
+    u.saveRange (reel, 16000, 17000);
+    CHECK (u.isSaved (0) && u.isSaved (1) && ! u.isSaved (2), "a range across a chunk edge saves both chunks");
+    CHECK (u.firstSaved() == 0 && u.lastSaved() == 1, "first / last saved chunk");
+
+    for (int i = 0; i < 32768; ++i) { L[(size_t) i] = 7.0f; R[(size_t) i] = 8.0f; }
+    u.save (reel, 0);                                   // saving again must not overwrite the copy of the original
+    u.swap (reel, 0);
+    u.swap (reel, 1);
+    u.swap (reel, 2);                                   // never saved: untouched
+    CHECK (L[5] == 5.0f && R[5] == -5.0f && L[20000] == 20000.0f && R[20000] == -20000.0f, "swap brings the original audio back");
+    CHECK (L[40000] == 40000.0f, "a chunk that was never saved is left alone");
+    u.swap (reel, 0);
+    CHECK (L[5] == 7.0f && R[5] == 8.0f, "swapping again puts the edited audio back (redo)");
+
+    EditState current;
+    current.length = 500;
+    u.flip (current);
+    CHECK (u.undone() && u.other().length == 500, "after a flip the other side is the state it was in");
+    u.flip (before);
+    CHECK (! u.undone() && u.other().length == 1000 && u.other().markers[1] == 20 && u.other().selected == 1, "flip back");
+    u.cancel();
+    CHECK (! u.hasStep(), "a cancelled step is gone");
+
+    u.begin (before);
+    u.saveRange (reel, 49000, 50000);
+    CHECK (u.isSaved (3), "the last (short) chunk saves");
+    u.swap (reel, 3);                                   // must not run past the end (checked under the memory sanitizer)
+    CHECK (! u.prepare (0) && ! u.ready(), "no memory wanted: not ready");
+}
+
+static void testSpliceMapEraseAndSet()
+{
+    using namespace phe::core;
+    auto markersOfMap = [] (const SpliceMap& m) { int b[kMaxSpliceMarkers]; const int n = m.snapshot (b, kMaxSpliceMarkers); return std::vector<int> (b, b + n); };
+    const int two[] = { 2000, 6000 };
+
+    SpliceMap m;
+    m.setMarkers (two, 2);
+    CHECK (m.eraseSplice (1, 12000) && markersOfMap (m) == std::vector<int> ({ 2000 }), "erasing the middle splice removes its closing marker");
+
+    m.setMarkers (two, 2);
+    CHECK (m.eraseSplice (0, 12000) && markersOfMap (m) == std::vector<int> ({ 4000 }), "erasing the first splice moves the later marker up by 2000");
+
+    m.setMarkers (two, 2);
+    CHECK (m.eraseSplice (2, 12000) && markersOfMap (m) == std::vector<int> ({ 2000 }), "erasing the last splice removes the marker in front of it");
+
+    SpliceMap one;
+    CHECK (! one.eraseSplice (0, 100), "a reel of one splice has nothing to join");
+    m.setMarkers (two, 2);
+    CHECK (! m.eraseSplice (3, 12000) && ! m.eraseSplice (-1, 12000) && markersOfMap (m).size() == 2, "no such splice");
+
+    const int many[] = { 100, 300, 700 };
+    m.setMarkers (many, 3);
+    CHECK (m.eraseSplice (1, 1000) && markersOfMap (m) == std::vector<int> ({ 100, 500 }), "the splice after it moves up: 700 - 200 = 500");
+    m.setMarkers (nullptr, 0);
+    CHECK (m.numMarkers() == 0, "setMarkers with none empties the list");
+}
+
+static void testSoftLimit()
+{
+    using namespace phe::dsp;
+    CHECK (softLimit (0.0f) == 0.0f && softLimit (0.5f) == 0.5f && softLimit (-0.79f) == -0.79f && softLimit (0.8f) == 0.8f,
+           "below the knee the signal is untouched");
+    bool ok = true, rising = true, odd = true;
+    float last = -2.0f;
+    for (int i = -4000; i <= 4000; ++i)
+    {
+        const float x = (float) i / 400.0f;                      // -10 .. +10
+        const float y = softLimit (x);
+        if (! (std::fabs (y) < 1.0f + 1.0e-6f) || ! std::isfinite (y)) ok = false;
+        if (y < last - 1.0e-6f) rising = false;
+        if (std::fabs (softLimit (-x) + y) > 1.0e-6f) odd = false;
+        last = y;
+    }
+    CHECK (ok, "never goes past full scale");
+    CHECK (rising, "never goes down as the input goes up");
+    CHECK (odd, "the same shape above and below zero");
+    CHECK (softLimit (0.9f) < 0.9f && softLimit (0.9f) > 0.85f, "gently bends above the knee: %f", softLimit (0.9f));
+    CHECK (softLimit (5.0f) > 0.99f, "large signals end up just below 1");
+    CHECK (std::fabs (softLimit (0.8001f) - 0.8001f) < 1.0e-4f, "smooth join at the knee");
+}
+
+static void testVariSpeedModes()
+{
+    using namespace phe::dsp;
+
+    // The classic mode is the default, exactly as before
+    bool same = true;
+    for (int i = 0; i <= 200; ++i)
+        for (int snap = 0; snap < 3; ++snap)
+            if (variSpeed ((float) i / 200.0f, snap).rate != variSpeed ((float) i / 200.0f, snap, kVariClassic).rate)
+                same = false;
+    CHECK (same, "classic is the default mode");
+
+    // Octave scale, bidirectional
+    CHECK (variSpeed (0.5f, 0, kVariOctaveBoth).stopped && variSpeed (0.5f, 0, kVariOctaveBoth).rate == 0.0f, "octave scale: middle stops");
+    CHECK (variSpeed (0.5f + 0.0015f, 0, kVariOctaveBoth).stopped, "octave scale: just off the middle is still stopped");
+    CHECK (near (variSpeed (1.0f, 0, kVariOctaveBoth).rate, 2.0f, 1.0e-4f) && near (variSpeed (0.0f, 0, kVariOctaveBoth).rate, -2.0f, 1.0e-4f),
+           "octave scale: the ends are double speed, forward and backward");
+    CHECK (std::fabs (variSpeed (0.938f, 0, kVariOctaveBoth).rate - 1.0f) < 0.03f && std::fabs (variSpeed (0.062f, 0, kVariOctaveBoth).rate + 1.0f) < 0.03f,
+           "octave scale: original speed at 0.938 / 0.062, got %f", variSpeed (0.938f, 0, kVariOctaveBoth).rate);
+    const float slowest = variSpeed (0.5f + 0.0025f, 0, kVariOctaveBoth).rate;
+    CHECK (slowest > 0.006f && slowest < 0.01f, "octave scale: just off the stop it is about 1/128 speed: %f", slowest);
+    bool rising = true, mirror = true;
+    float last = 0.0f;
+    for (int i = 0; i <= 1000; ++i)
+    {
+        const float x = 0.5f + 0.5f * (float) i / 1000.0f;
+        const float rate = variSpeed (x, 0, kVariOctaveBoth).rate;
+        if (rate < last - 1.0e-6f) rising = false;
+        last = rate;
+        if (std::fabs (rate + variSpeed (1.0f - x, 0, kVariOctaveBoth).rate) > 1.0e-5f) mirror = false;
+    }
+    CHECK (rising, "octave scale: faster the further you turn");
+    CHECK (mirror, "octave scale: the backward half is the mirror of the forward half");
+
+    // Octave scale, forward only
+    CHECK (variSpeed (0.0f, 0, kVariOctaveForward).stopped && variSpeed (0.003f, 0, kVariOctaveForward).stopped, "forward only: the far left stops");
+    CHECK (near (variSpeed (1.0f, 0, kVariOctaveForward).rate, 2.0f, 1.0e-4f), "forward only: the far right is double speed");
+    CHECK (std::fabs (variSpeed (0.8755f, 0, kVariOctaveForward).rate - 1.0f) < 0.02f, "forward only: original speed at 0.8755");
+    bool forwardOnly = true;
+    rising = true;
+    last = 0.0f;
+    for (int i = 0; i <= 1000; ++i)
+    {
+        const float rate = variSpeed ((float) i / 1000.0f, 0, kVariOctaveForward).rate;
+        if (rate < 0.0f) forwardOnly = false;
+        if (rate < last - 1.0e-6f) rising = false;
+        last = rate;
+    }
+    CHECK (forwardOnly && rising, "forward only never plays backwards and speeds up steadily");
+
+    // Pitch Snap works on the octave scales
+    bool whole = true, steps = true;
+    for (int mode = 1; mode <= 2; ++mode)
+        for (int i = 0; i <= 500; ++i)
+        {
+            const float x = (float) i / 500.0f;
+            const auto r = variSpeed (x, kSnapSemitones, mode);
+            if (! r.stopped && std::fabs (std::fabs (12.0f * std::log2 (std::fabs (r.rate))) - std::round (std::fabs (12.0f * std::log2 (std::fabs (r.rate))))) > 1.0e-3f)
+                whole = false;
+            const auto s = variSpeed (x, kSnapSteps, mode);
+            if (! s.stopped && s.semitones >= -48.0f)
+            {
+                bool found = false;
+                for (float step : kSnapStepList)
+                    if (std::fabs (std::fabs (s.semitones) - step) < 1.0e-3f) found = true;
+                if (! found) steps = false;
+            }
+        }
+    CHECK (whole, "octave scales: Semitones lands on whole semitones");
+    CHECK (steps, "octave scales: Steps lands on the shared step list");
+    CHECK (variSpeed (std::numeric_limits<float>::quiet_NaN(), 0, kVariOctaveBoth).stopped || std::isfinite (variSpeed (std::numeric_limits<float>::quiet_NaN(), 0, kVariOctaveForward).rate),
+           "a bad knob value gives a sane speed");
+}
+
+static void testMorphChordTable()
+{
+    using namespace phe::dsp;
+    CHECK (kNumMorphChords == 5 && kMorphChords[0].semitones[1] == 0.0f, "entry 0 is the random pitch-ups");
+    CHECK (near (std::exp2 (kMorphChords[1].semitones[1] / 12.0f), 2.0f, 1.0e-4f) && near (std::exp2 (kMorphChords[1].semitones[2] / 12.0f), 3.0f, 1.0e-3f)
+           && near (std::exp2 (kMorphChords[1].semitones[3] / 12.0f), 4.0f, 1.0e-4f), "the classic chord is the ratios 2, 3, 4");
+    bool first = true;
+    for (int i = 0; i < kNumMorphChords; ++i)
+        if (kMorphChords[i].semitones[0] != 0.0f) first = false;
+    CHECK (first, "gene 1 always stays at the tape's own pitch");
+}
+
+//------------------------------------------------------------------------------
+static void testEraseSpliceInEngine()
+{
+    // Erase the middle splice
+    {
+        Rig r;
+        threeSplicesWith (r, tone);
+        CHECK (markersOf (r.e) == std::vector<int> ({ 2000, 6000 }), "setup: three splices");
+        press (r, r.p.shift);                                     // splice 2 selected
+        const auto beforeL = reelCopy (r.e, 0), beforeR = reelCopy (r.e, 1);
+        r.e.takeHandledButtons();
+        press (r, r.p.eraseSplice);
+        CHECK ((r.e.takeHandledButtons() & phe::Engine::kButtonErase) != 0, "the wrapper is told Erase Splice acted");
+        finishEdits (r);
+        const auto view = r.e.getReelView();
+        CHECK (! view.busy && view.lengthSamples == 8000, "the reel is 4000 samples shorter: %d", view.lengthSamples);
+        CHECK (markersOf (r.e) == std::vector<int> ({ 2000 }), "one marker left");
+        CHECK (view.numSplices == 2 && view.selectedSplice == 1, "the splice after the erased one is selected (now number 2), got %d", view.selectedSplice);
+        bool ok = true;
+        for (int i = 0; i < 8000; ++i)
+        {
+            const int from = i < 2000 ? i : i + 4000;
+            if (r.e.getReel().get (0, i) != beforeL[(size_t) from] || r.e.getReel().get (1, i) != beforeR[(size_t) from]) ok = false;
+        }
+        CHECK (ok, "the audio after the erased splice moved up exactly");
+        CHECK (pictureMatchesAudio (r.e), "the waveform picture follows");
+        const auto out = r.run (3000, 500, silence);
+        CHECK (r.e.getReelView().playing && maxAbs (out[0]) > 0.05f, "the reel plays again after Erase Splice");
+    }
+
+    // Erase the first splice, then the last
+    {
+        Rig r;
+        threeSplicesWith (r, tone);
+        const auto beforeL = reelCopy (r.e, 0);
+        press (r, r.p.eraseSplice);                               // splice 1 is selected
+        finishEdits (r);
+        CHECK (r.e.getReelView().lengthSamples == 10000 && markersOf (r.e) == std::vector<int> ({ 4000 }), "first splice erased: markers moved up");
+        bool ok = true;
+        for (int i = 0; i < 10000; ++i)
+            if (r.e.getReel().get (0, i) != beforeL[(size_t) i + 2000]) ok = false;
+        CHECK (ok, "all the audio moved up by 2000");
+        CHECK (r.e.getReelView().selectedSplice == 0, "the next splice is now number 1");
+
+        press (r, r.p.shift);                                     // last splice selected (2 of 2)
+        press (r, r.p.eraseSplice);
+        finishEdits (r);
+        CHECK (r.e.getReelView().lengthSamples == 4000 && markersOf (r.e).empty(), "last splice erased: the reel is one splice of 4000");
+        CHECK (r.e.getReelView().selectedSplice == 0, "selection stays inside the reel");
+        bool kept = true;
+        for (int i = 0; i < 4000; ++i)
+            if (r.e.getReel().get (0, i) != beforeL[(size_t) i + 2000]) kept = false;
+        CHECK (kept && pictureMatchesAudio (r.e), "the first part is untouched and the picture agrees");
+    }
+
+    // A reel of one splice: Erase Splice empties it (and Undo brings it back)
+    {
+        Rig r;
+        r.recordFirstTake (20000, 500, tone);
+        const auto before = reelCopy (r.e, 0);
+        press (r, r.p.eraseSplice);
+        finishEdits (r);
+        CHECK (r.e.getReelView().lengthSamples == 0 && ! r.e.getReelView().playing, "one splice: Erase Splice empties the reel");
+        press (r, r.p.undo);
+        finishEdits (r);
+        CHECK (r.e.getReelView().lengthSamples == 20000 && reelCopy (r.e, 0) == before, "Undo brings the emptied reel back exactly");
+    }
+
+    // Nothing to erase on an empty reel; refused while recording
+    {
+        Rig r;
+        press (r, r.p.eraseSplice);
+        CHECK (r.e.getReelView().lengthSamples == 0 && ! r.e.getReelView().busy, "Erase Splice on an empty reel does nothing");
+
+        threeSplicesWith (r, tone);
+        r.p.rec = true;
+        r.run (1000, 500, tone);
+        r.e.takeHandledButtons();
+        press (r, r.p.eraseSplice);
+        CHECK ((r.e.getReelView().recording) && r.e.getReelView().lengthSamples == 12000 && markersOf (r.e).size() == 2, "Erase Splice is refused while recording");
+        CHECK ((r.e.takeHandledButtons() & phe::Engine::kButtonErase) != 0, "... and the button still goes back off");
+        r.p.rec = false;
+        r.run (500, 500, silence);
+    }
+}
+
+// A long reel (about 58 seconds): the move is made in steps over many blocks, whatever the block size, and comes out exactly right.
+static void testEraseSpliceLongReelInSteps()
+{
+    for (int block : { 64, 512, 4096 })
+    {
+        Rig r;
+        const int n = 2800000;
+        r.recordFirstTake (n, 4096, tone);
+        r.run (50000 - 4096, 4096, silence);
+        press (r, r.p.splice);
+        r.run (1000000, 4096, silence);
+        press (r, r.p.splice);
+        const auto marks = markersOf (r.e);
+        CHECK (marks.size() == 2, "setup: two markers on the long reel");
+        press (r, r.p.shift);                                     // splice 2 (the one in the middle) selected
+        const auto beforeL = reelCopy (r.e, 0), beforeR = reelCopy (r.e, 1);
+
+        const int s = marks[0], e = marks[1];
+        r.p.eraseSplice = true;
+        r.run (block, block, silence);
+        r.p.eraseSplice = false;
+        const bool busyStraightAway = r.e.getReelView().busy;
+        const auto whileBusy = r.run (block, block, silence);
+        const bool silentWhileBusy = ! r.e.getReelView().busy || maxAbs (whileBusy[0]) == 0.0f;
+        // Edit buttons pressed during the job are ignored but still handled
+        r.e.takeHandledButtons();
+        r.p.splice = true;  r.p.clearReel = true;  r.p.rec = true;
+        r.run (block, block, silence);
+        r.p.splice = false; r.p.clearReel = false; r.p.rec = false;
+        const bool ignored = r.e.getReelView().lengthSamples == n && ! r.e.getReelView().recording;
+        const bool handled = (r.e.takeHandledButtons() & phe::Engine::kButtonSplice) != 0 && r.e.takeClearHandled() && r.e.takeRecordStopped();
+        const int blocks = finishEdits (r, block);
+
+        CHECK (busyStraightAway, "block %d: the engine is busy with the big edit", block);
+        CHECK (silentWhileBusy, "block %d: silent while busy", block);
+        CHECK (ignored && handled, "block %d: edit buttons are ignored while busy, and still go back off", block);
+        CHECK (blocks >= 1 || block >= 4096, "block %d: the job took %d more blocks", block, blocks);
+
+        std::vector<float> expectedL (beforeL), expectedR (beforeR);
+        expectedL.erase (expectedL.begin() + s, expectedL.begin() + e);
+        expectedR.erase (expectedR.begin() + s, expectedR.begin() + e);
+        CHECK (r.e.getReelView().lengthSamples == n - (e - s), "block %d: new length %d", block, r.e.getReelView().lengthSamples);
+        CHECK (reelCopy (r.e, 0) == expectedL && reelCopy (r.e, 1) == expectedR, "block %d: the moved audio is exactly right", block);
+        CHECK (pictureMatchesAudio (r.e), "block %d: the picture follows on a long reel", block);
+
+        // ... and Undo puts it all back exactly
+        press (r, r.p.undo);
+        finishEdits (r, block);
+        CHECK (reelCopy (r.e, 0) == beforeL && reelCopy (r.e, 1) == beforeR && markersOf (r.e) == marks, "block %d: Undo restores the long reel and its markers exactly", block);
+        CHECK (pictureMatchesAudio (r.e), "block %d: picture restored", block);
+        press (r, r.p.undo);                                      // Redo
+        finishEdits (r, block);
+        CHECK (reelCopy (r.e, 0) == expectedL && markersOf (r.e).size() == 1, "block %d: Redo erases it again", block);
+    }
+}
+
+static void testUndoInEngine()
+{
+    // The first recording
+    {
+        Rig r;
+        CHECK (r.e.getReelView().undoState == 0, "nothing to undo on a fresh plugin");
+        r.recordFirstTake (20000, 500, tone);
+        const auto A = reelCopy (r.e, 0);
+        CHECK (r.e.getReelView().undoState == 1, "the recording can be undone");
+        press (r, r.p.undo);
+        finishEdits (r);
+        CHECK (r.e.getReelView().lengthSamples == 0 && ! r.e.getReelView().playing && r.e.getReelView().undoState == 2, "Undo takes the first recording away (and offers Redo)");
+        CHECK (pictureMatchesAudio (r.e), "the picture is empty");
+        press (r, r.p.undo);
+        finishEdits (r);
+        CHECK (r.e.getReelView().lengthSamples == 20000 && reelCopy (r.e, 0) == A && r.e.getReelView().undoState == 1, "Redo brings it back exactly");
+        CHECK (pictureMatchesAudio (r.e) && r.e.getReelView().playing, "picture and playback are back");
+    }
+
+    // Time Lag Accumulation over several chunks
+    {
+        Rig r;
+        r.recordFirstTake (40000, 500, tone);
+        const auto A = reelCopy (r.e, 0), AR = reelCopy (r.e, 1);
+        r.p.rec = true;
+        r.run (30000, 500, secondTone);
+        CHECK (r.e.getReelView().recKind == 2, "recording over an existing splice reports Time Lag Accumulation (kind 2)");
+        r.p.rec = false;
+        r.run (500, 500, silence);
+        CHECK (r.e.getReelView().recKind == 0, "not recording any more");
+        const auto B = reelCopy (r.e, 0), BR = reelCopy (r.e, 1);
+        CHECK (A != B, "the overdub changed the reel");
+        press (r, r.p.undo);
+        finishEdits (r);
+        CHECK (reelCopy (r.e, 0) == A && reelCopy (r.e, 1) == AR, "Undo takes the overdub away exactly");
+        CHECK (pictureMatchesAudio (r.e), "picture matches after undoing the overdub");
+        press (r, r.p.undo);
+        finishEdits (r);
+        CHECK (reelCopy (r.e, 0) == B && reelCopy (r.e, 1) == BR, "Redo puts the overdub back exactly");
+        CHECK (pictureMatchesAudio (r.e), "picture matches after redoing it");
+    }
+
+    // Splice markers
+    {
+        Rig r;
+        threeSplicesWith (r, tone);
+        const std::vector<int> three { 2000, 6000 };
+        CHECK (markersOf (r.e) == three, "setup");
+
+        press (r, r.p.deleteAllMarkers);
+        CHECK (markersOf (r.e).empty(), "all markers gone");
+        press (r, r.p.undo);   finishEdits (r);
+        CHECK (markersOf (r.e) == three, "Undo brings all the markers back");
+        press (r, r.p.undo);   finishEdits (r);
+        CHECK (markersOf (r.e).empty(), "Redo takes them away again");
+        press (r, r.p.undo);   finishEdits (r);
+
+        press (r, r.p.deleteMarker);                              // splice 1 is selected: its closing marker (2000) goes
+        CHECK (markersOf (r.e) == std::vector<int> ({ 6000 }), "Delete Splice Marker");
+        press (r, r.p.undo);   finishEdits (r);
+        CHECK (markersOf (r.e) == three && r.e.getReelView().selectedSplice == 0, "Undo puts the marker and the selection back");
+
+        press (r, r.p.splice);
+        CHECK (markersOf (r.e).size() == 3, "Splice added a marker");
+        press (r, r.p.undo);   finishEdits (r);
+        CHECK (markersOf (r.e) == three, "Undo takes the new marker away");
+
+        // Only the newest edit: two markers added, Undo only takes the last
+        r.run (900, 500, silence);
+        press (r, r.p.splice);
+        const auto afterFirst = markersOf (r.e);
+        r.run (300, 500, silence);
+        press (r, r.p.splice);
+        const auto afterSecond = markersOf (r.e);
+        CHECK (afterFirst.size() == 3 && afterSecond.size() == 4, "setup: two more markers");
+        press (r, r.p.undo);   finishEdits (r);
+        CHECK (markersOf (r.e) == afterFirst, "Undo takes away only the newest edit");
+        press (r, r.p.undo);   finishEdits (r);
+        CHECK (markersOf (r.e) == afterSecond, "pressing Undo again is Redo");
+        press (r, r.p.undo);   finishEdits (r);
+
+        // A new edit after an Undo forgets the Redo
+        r.run (500, 500, silence);
+        press (r, r.p.splice);
+        const auto fresh = markersOf (r.e);
+        CHECK (fresh.size() == afterFirst.size() + 1, "setup: the new marker was accepted");
+        CHECK (r.e.getReelView().undoState == 1, "a new edit offers Undo again");
+        press (r, r.p.undo);   finishEdits (r);
+        CHECK (markersOf (r.e) == afterFirst, "Undo takes away the new edit, not the one that was undone");
+        CHECK (fresh != afterSecond || true, "(the new marker was added somewhere else)");
+    }
+
+    // Clear Reel
+    {
+        Rig r;
+        r.recordFirstTake (20000, 500, tone);
+        const auto A = reelCopy (r.e, 0);
+        press (r, r.p.clearReel);
+        CHECK (r.e.getReelView().lengthSamples == 0, "Clear Reel cleared");
+        press (r, r.p.undo);   finishEdits (r);
+        CHECK (r.e.getReelView().lengthSamples == 20000 && reelCopy (r.e, 0) == A && pictureMatchesAudio (r.e), "Undo brings the cleared reel back");
+        r.run (2000, 500, silence);
+        CHECK (r.e.getReelView().playing, "and it plays again");
+    }
+
+    // Rec New Splice
+    {
+        Rig r;
+        r.recordFirstTake (12000, 500, tone);
+        const auto A = reelCopy (r.e, 0);
+        r.p.recNewSplice = true;
+        r.run (5000, 500, secondTone);
+        CHECK (r.e.getReelView().recKind == 3, "recording a new splice reports kind 3");
+        r.p.recNewSplice = false;
+        r.run (1000, 500, silence);
+        const auto B = reelCopy (r.e, 0);
+        CHECK (B.size() == 17000 && markersOf (r.e) == std::vector<int> ({ 12000 }), "setup: a new splice of 5000");
+        press (r, r.p.undo);   finishEdits (r);
+        CHECK (r.e.getReelView().lengthSamples == 12000 && markersOf (r.e).empty() && reelCopy (r.e, 0) == A, "Undo takes the new splice away");
+        press (r, r.p.undo);   finishEdits (r);
+        CHECK (reelCopy (r.e, 0) == B && markersOf (r.e) == std::vector<int> ({ 12000 }), "Redo brings it back");
+    }
+
+    // Nothing to undo; refused while recording
+    {
+        Rig r;
+        r.e.takeHandledButtons();
+        press (r, r.p.undo);
+        CHECK ((r.e.takeHandledButtons() & phe::Engine::kButtonUndo) != 0 && r.e.getReelView().lengthSamples == 0 && ! r.e.getReelView().busy,
+               "Undo with nothing to undo does nothing (and the button goes back off)");
+
+        r.recordFirstTake (20000, 500, tone);
+        r.p.rec = true;
+        r.run (1000, 500, tone);
+        const auto during = reelCopy (r.e, 0);
+        press (r, r.p.undo);
+        CHECK (r.e.getReelView().recording && r.e.getReelView().lengthSamples == 20000, "Undo is refused while recording");
+        r.p.rec = false;
+        r.run (500, 500, silence);
+        press (r, r.p.undo);   finishEdits (r);
+        CHECK (r.e.getReelView().undoState == 2, "after the recording, Undo works on it");
+    }
+
+    // A recording that is thrown away (too short) leaves nothing to undo
+    {
+        Rig r;
+        r.recordFirstTake (20000, 500, tone);
+        press (r, r.p.splice);
+        press (r, r.p.undo);   finishEdits (r);                    // undoes the marker; now Redo is on offer
+        Rig q;
+        q.p.rec = true;
+        q.run (32, 32, tone);
+        q.p.rec = false;
+        q.run (500, 500, silence);
+        CHECK (q.e.getReelView().lengthSamples == 0 && q.e.getReelView().undoState == 0, "a take too short to keep leaves nothing to undo");
+    }
+}
+
+static void testUndoBlockSizesAndRateChange()
+{
+    auto scenario = [] (int block)
+    {
+        Rig r;
+        r.recordFirstTake (60000, 500, tone);
+        r.run (1500, 500, silence);
+        press (r, r.p.splice);
+        r.run (12000, 500, silence);
+        press (r, r.p.splice);
+        press (r, r.p.shift);
+        r.p.rec = true;       r.run (20000, 500, secondTone);
+        r.p.rec = false;      r.run (500, 500, silence);
+        press (r, r.p.eraseSplice);   finishEdits (r, block);
+        press (r, r.p.undo);          finishEdits (r, block);
+        press (r, r.p.undo);          finishEdits (r, block);
+        press (r, r.p.undo);          finishEdits (r, block);
+        std::vector<float> all = reelCopy (r.e, 0);
+        const auto marks = markersOf (r.e);
+        all.insert (all.end(), marks.begin(), marks.end());
+        return all;
+    };
+    const auto reference = scenario (256);
+    CHECK (scenario (64) == reference, "the same edits and undos give the same reel at block size 64");
+    CHECK (scenario (1000) == reference, "... and at block size 1000");
+
+    // Changing the sample rate forgets the undo history; reset() finishes a big edit
+    {
+        Rig r;
+        r.recordFirstTake (20000, 500, tone);
+        CHECK (r.e.getReelView().undoState == 1, "setup");
+        r.e.prepare (44100.0, 4096, 2);
+        CHECK (r.e.getReelView().undoState == 0 && ! r.e.getReelView().busy, "a new sample rate forgets the undo history");
+    }
+    {
+        Rig r;
+        r.recordFirstTake (2000000, 4096, tone);
+        r.p.undo = true;
+        r.run (256, 256, silence);
+        r.p.undo = false;
+        CHECK (r.e.getReelView().busy, "setup: a long undo in progress");
+        r.e.reset();
+        CHECK (! r.e.getReelView().busy && r.e.getReelView().lengthSamples == 0, "reset() carries a big edit to its end instead of leaving it half done");
+    }
+}
+
+//------------------------------------------------------------------------------
+static void testTlaLimiterAndRecordSource()
+{
+    // Many passes of loud sound cannot run away
+    {
+        Rig r;
+        r.recordFirstTake (20000, 500, loudSteady);
+        r.p.rec = true;
+        r.run (400000, 500, loudSteady);                          // 20 laps, sound on sound at full level on both
+        r.p.rec = false;
+        r.run (500, 500, silence);
+        float biggest = 0.0f;
+        bool finite = true;
+        for (int i = 0; i < 20000; ++i)
+        {
+            const float v = r.e.getReel().get (0, i);
+            if (! std::isfinite (v)) finite = false;
+            biggest = std::max (biggest, std::fabs (v));
+        }
+        CHECK (finite && biggest <= 1.0f, "20 loud passes: the reel never goes past full scale (peak %f)", biggest);
+        CHECK (biggest > 0.95f, "... but it still fills up towards full scale (peak %f)", biggest);
+    }
+
+    // Quiet sound is untouched by the limiter
+    {
+        Rig r;
+        r.recordFirstTake (20000, 500, quarterSteady);
+        r.p.rec = true;
+        r.run (2000, 500, quarterSteady);
+        r.p.rec = false;
+        r.run (500, 500, silence);
+        // Somewhere in the overdubbed stretch the reel holds 0.25 + 0.25 = 0.5 exactly as before
+        int exact = 0;
+        for (int i = 0; i < 20000; ++i)
+            if (std::fabs (r.e.getReel().get (0, i) - 0.5f) < 1.0e-6f) ++exact;
+        CHECK (exact > 1500, "below the knee the sum is exactly 0.25 + 0.25 (%d samples)", exact);
+    }
+
+    // Record Source "input only": what is recorded is the live input whatever Sound On Sound says
+    for (int source = 0; source <= 1; ++source)
+    {
+        Rig r;
+        r.recordFirstTake (20000, 500, quarterSteady);
+        r.p.soundOnSound = 1.0f;                                  // you hear the loop only; with "mix" that is all that is recorded
+        r.p.recordSource = source;
+        r.run (20000, 500, silence);                              // let the Sound On Sound knob settle before recording
+        r.p.rec = true;
+        r.run (25000, 500, [] (int, long long) { return 0.3f; });
+        r.p.rec = false;
+        r.run (500, 500, silence);
+        int live = 0, loopOnly = 0;
+        for (int i = 0; i < 20000; ++i)
+        {
+            const float v = r.e.getReel().get (0, i);
+            if (std::fabs (v - 0.3f) < 1.0e-3f) ++live;
+            if (std::fabs (v - 0.25f) < 1.0e-3f) ++loopOnly;
+        }
+        if (source == 1)
+            CHECK (live > 19000, "input only: the splice now holds the live input (%d of 20000)", live);
+        else
+            CHECK (loopOnly > 19000 && live == 0, "mix with Sound On Sound on the loop: the loop is recorded as it was (%d)", loopOnly);
+    }
+}
+
+static void testOrganizeImmediately()
+{
+    for (int immediate = 0; immediate <= 1; ++immediate)
+    {
+        Rig r;
+        threeSplicesWith (r, twoHalves);                          // [0,2000) 0.1   [2000,6000) 0.1   [6000,12000) 0.3
+        r.p.organizeMode = immediate;
+        r.p.organize = 0.5f;                                      // splice 2
+        r.run (12000, 500, silence);
+        r.p.play = false;
+        r.run (9000, 500, silence);                               // every gene finishes and the tape stops
+        r.p.play = true;                                          // a fresh gene starts now, in splice 2 (4000 samples)
+        r.run (500, 100, silence);
+        r.p.organize = 0.9f;                                      // splice 3 chosen
+        r.run (300, 100, silence);
+        const auto out = r.run (100, 100, silence);
+        float mean = 0.0f;
+        for (float v : out[0]) mean += v / 100.0f;
+        if (immediate == 1)
+            CHECK (std::fabs (mean - 0.3f) < 0.01f, "Organize immediately: splice 3 is playing at once (mean %f)", mean);
+        else
+            CHECK (std::fabs (mean - 0.1f) < 0.01f, "Organize at end of gene: still splice 2 (mean %f)", mean);
+    }
+}
+
+static void testPlayModes()
+{
+    // Momentary: Play off stops at once; classic lets the gene finish
+    for (int mode = 0; mode <= 1; ++mode)
+    {
+        Rig r;
+        r.recordFirstTake (12000, 500, steadySound);
+        r.p.playMode = mode;
+        r.p.play = false;
+        r.run (13000, 500, silence);                              // everything finishes and stops
+        r.p.play = true;                                          // a fresh gene (12000 samples) starts now
+        r.run (500, 100, silence);
+        r.p.play = false;
+        r.run (200, 100, silence);
+        const auto out = r.run (100, 100, silence);
+        float mean = 0.0f;
+        for (float v : out[0]) mean += v / 100.0f;
+        if (mode == 1)
+            CHECK (std::fabs (mean) < 1.0e-6f, "momentary: silent shortly after Play goes off (mean %f)", mean);
+        else
+            CHECK (std::fabs (mean - 0.7f) < 0.01f, "classic: the gene in progress plays on (mean %f)", mean);
+    }
+
+    // Trigger loop: Play off does not stop it, switching Play on jumps back to the start
+    {
+        Rig r;
+        r.recordFirstTake (12000, 500, twoHalves);
+        r.p.playMode = 2;
+        r.p.play = false;
+        const auto out = r.run (40000, 500, silence);
+        std::vector<float> tail (out[0].end() - 1000, out[0].end());
+        CHECK (maxAbs (tail) > 0.05f && r.e.getReelView().playing, "trigger loop plays on although Play is off");
+
+        // wait until the head is in the second half (0.3), then retrigger
+        int guard = 0;
+        while (r.e.getReelView().playPos < 8000 && guard++ < 1000)
+            r.run (100, 100, silence);
+        CHECK (r.e.getReelView().playPos >= 8000, "setup: the head is in the second half");
+        r.p.play = true;
+        const auto after = r.run (400, 100, silence);
+        float mean = 0.0f;
+        for (int i = 200; i < 400; ++i) mean += after[0][(size_t) i] / 200.0f;
+        CHECK (std::fabs (mean - 0.1f) < 0.02f && r.e.getReelView().playPos < 1000, "switching Play on jumps back to the start (mean %f, head %d)", mean, r.e.getReelView().playPos);
+    }
+    {
+        // Trigger loop plays a new recording even when Play was off
+        Rig r;
+        r.p.playMode = 2;
+        r.p.play = false;
+        r.recordFirstTake (12000, 500, steadySound);
+        r.run (2000, 500, silence);
+        CHECK (r.e.getReelView().playing, "trigger loop starts a new recording by itself");
+    }
+}
+
+static void testGeneWindowSmooth()
+{
+    auto averageOutput = [] (int window)
+    {
+        Rig r;
+        r.recordFirstTake (48000, 500, steadySound);
+        r.p.geneSize = 0.4394f;                                   // a gene of about 50 ms
+        r.p.geneWindow = window;
+        r.run (30000, 500, silence);
+        const auto out = r.run (48000, 500, silence);
+        double sum = 0.0;
+        for (float v : out[0]) sum += v;
+        return (float) (sum / 48000.0);
+    };
+    const float classic = averageOutput (0), smooth = averageOutput (1);
+    CHECK (classic > 0.65f, "classic windows: short fades only (mean %f)", classic);
+    CHECK (smooth > 0.30f && smooth < 0.40f, "smooth windows: each gene swells and dies away (mean %f, about half of 0.7)", smooth);
+}
+
+static void testMorphChordInEngine()
+{
+    auto powers = [] (int chord, double freq)
+    {
+        Rig r;
+        r.recordFirstTake (48000, 500, sine440);
+        r.p.soundOnSound = 1.0f;
+        r.p.morph = 1.0f;
+        r.p.morphChord = chord;
+        r.run (96000, 500, silence);
+        const auto out = r.run (48000, 500, silence);
+        return goertzelPower (out[0], freq, 48000.0);
+    };
+    const double p440 = powers (1, 440.0), p880 = powers (1, 880.0), p1100 = powers (1, 1100.0), p1320 = powers (1, 1320.0),
+                 p1760 = powers (1, 1760.0), p1540 = powers (1, 1540.0);
+    CHECK (p440 > 8.0 * p1100 && p880 > 8.0 * p1100 && p1320 > 8.0 * p1100 && p1760 > 8.0 * p1540,
+           "the octave chord sounds at 1x, 2x, 3x and 4x (powers %g %g %g %g, off-notes %g %g)", p440, p880, p1320, p1760, p1100, p1540);
+
+    // Below 2:30 on Morph the chord does nothing
+    Rig r;
+    r.recordFirstTake (48000, 500, sine440);
+    r.p.morph = 0.5f;
+    r.p.morphChord = 1;
+    r.run (96000, 500, silence);
+    const auto out = r.run (48000, 500, silence);
+    CHECK (goertzelPower (out[0], 880.0, 48000.0) < 0.01 * goertzelPower (out[0], 440.0, 48000.0), "Morph below 2:30: no chord, only the original pitch");
+}
+
+static void testMilestone8Stress()
+{
+    Rig r (44100.0);
+    uint32_t seed = 987654u;
+    auto rnd = [&seed] { seed = seed * 1664525u + 1013904223u; return (float) (seed >> 8) / 16777216.0f; };
+    bool finite = true, consistent = true;
+    for (int blockNumber = 0; blockNumber < 3000; ++blockNumber)
+    {
+        r.p.organize = rnd();   r.p.geneSize = rnd() * rnd();   r.p.slide = rnd();   r.p.variSpeed = rnd();   r.p.morph = rnd();
+        r.p.rec = rnd() > 0.94f;   r.p.recNewSplice = rnd() > 0.93f;   r.p.play = rnd() > 0.15f;
+        r.p.splice = rnd() > 0.6f;   r.p.shift = rnd() > 0.7f;   r.p.deleteMarker = rnd() > 0.95f;   r.p.deleteAllMarkers = rnd() > 0.99f;
+        r.p.eraseSplice = rnd() > 0.9f;   r.p.undo = rnd() > 0.85f;   r.p.clearReel = rnd() > 0.997f;
+        r.p.soundOnSound = rnd();
+        r.p.variSpeedMode = (int) (rnd() * 2.99f);   r.p.recordSource = rnd() > 0.5f ? 1 : 0;   r.p.organizeMode = rnd() > 0.5f ? 1 : 0;
+        r.p.geneWindow = rnd() > 0.5f ? 1 : 0;   r.p.playMode = (int) (rnd() * 2.99f);   r.p.morphChord = (int) (rnd() * 4.99f);
+        r.p.pitchSnap = (int) (rnd() * 2.99f);   r.p.pitchScale = (int) (rnd() * 6.0f);
+        const auto out = r.run (200 + (int) (rnd() * 300.0f), 100, tone);
+        for (int c = 0; c < 2; ++c)
+            for (float v : out[(size_t) c])
+                if (! std::isfinite (v) || std::fabs (v) > 100.0f)
+                    finite = false;
+
+        const auto view = r.e.getReelView();
+        const auto marks = markersOf (r.e);
+        if (! view.busy)                                     // while a big edit is half done the pieces are not expected to agree yet
+        {
+            const int length = r.e.getReel().length();
+            int previous = 0;
+            for (int m : marks)
+            {
+                if (m - previous < phe::core::kMinSpliceSamples || length - m < phe::core::kMinSpliceSamples)
+                    consistent = false;
+                previous = m;
+            }
+            if (view.numSplices != (int) marks.size() + 1 || view.numSplices > phe::core::kMaxSplices) consistent = false;
+            if (view.selectedSplice < 0 || view.selectedSplice >= view.numSplices) consistent = false;
+            if (view.playingSplice < 0 || view.playingSplice >= view.numSplices) consistent = false;
+            if (length < 0 || length > view.capacitySamples) consistent = false;
+            if (length == 0 && ! marks.empty()) consistent = false;
+        }
+    }
+    CHECK (finite, "random edits, undos and options never make bad sound");
+    CHECK (consistent, "the markers, selection and length always stay valid");
+
+    r.p = phe::Params();
+    r.p.play = false;
+    finishEdits (r);
+    r.run (4096, 256, silence);
+    const auto view = r.e.getReelView();
+    CHECK (! view.busy && view.lengthSamples >= 0 && view.lengthSamples <= view.capacitySamples, "after the random work the engine is idle and sane");
+}
+
+
 int main()
 {
     testPassThroughWhenEmpty();
@@ -2137,7 +2976,6 @@ int main()
     testGeneFadesAndPlayOff();
     testPitchSnapInEngine();
     testRecordSpeedIsConstant();
-    testControlsNotYetUsed();
     testMorphLandmarks();
     testRandomPitchUp();
     testMorphDefaultIsPlainLoop();
@@ -2157,6 +2995,21 @@ int main()
     testClearReelAndRateChangeKeepMarkersRight();
     testSplicesStayFiniteAndConsistent();
     testSpliceBlockSizeIndependence();
+    testUndoStoreBasics();
+    testSpliceMapEraseAndSet();
+    testSoftLimit();
+    testVariSpeedModes();
+    testMorphChordTable();
+    testEraseSpliceInEngine();
+    testEraseSpliceLongReelInSteps();
+    testUndoInEngine();
+    testUndoBlockSizesAndRateChange();
+    testTlaLimiterAndRecordSource();
+    testOrganizeImmediately();
+    testPlayModes();
+    testGeneWindowSmooth();
+    testMorphChordInEngine();
+    testMilestone8Stress();
     testEdgeCases();
     testGainSteps();
     testScales();

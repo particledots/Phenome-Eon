@@ -97,6 +97,20 @@ namespace phe::dsp
         return m;
     }
 
+    // "Morph Chord" (optional, from the module's later firmware options): instead of random pitch-ups, the genes past 2:30 take
+    // fixed steps up in turn. Gene 1 stays at the tape's own pitch; genes 2, 3 and 4 get the chord's three steps (semitones above
+    // whatever the tape is doing). Entry 0 means "random pitch-ups" (the normal Morph behaviour). The classic one is the
+    // module's old fixed chord: ratios 2, 3, 4 = +12, +19.02 and +24 semitones.
+    inline constexpr int kNumMorphChords = 5;
+    struct MorphChord { const char* name; float semitones[4]; };
+    inline constexpr MorphChord kMorphChords[kNumMorphChords] = {
+        { "Random pitch-ups",             { 0.0f, 0.0f, 0.0f, 0.0f } },
+        { "Octave chord (+12 +19 +24)",   { 0.0f, 12.0f, 19.0195500f, 24.0f } },
+        { "Major (+4 +7 +12)",            { 0.0f, 4.0f, 7.0f, 12.0f } },
+        { "Minor (+3 +7 +12)",            { 0.0f, 3.0f, 7.0f, 12.0f } },
+        { "Fifths (+7 +14 +21)",          { 0.0f, 7.0f, 14.0f, 21.0f } },
+    };
+
     // A tiny fast random number source for the audio thread (no memory, no locks). Same numbers every run.
     class Random
     {

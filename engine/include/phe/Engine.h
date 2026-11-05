@@ -1,6 +1,7 @@
 // The PhenomeEon audio engine.
 //
-// Milestone 7: splices, on top of milestone 6 (Morph and Pitch Scale), milestone 5 (the tape head and genes) and
+// Milestone 8: Erase Splice, Undo / Redo, Time Lag Accumulation polish and six optional behaviours (see Params.h), on top of
+// milestone 7: splices, on top of milestone 6 (Morph and Pitch Scale), milestone 5 (the tape head and genes) and
 // milestone 4 (the reel, recording, Sound On Sound, Clear Reel).
 //
 //   - The reel is one stereo strip of up to 2.9 minutes (see Reel.h), cut into splices by markers (core/SpliceMap.h).
@@ -20,6 +21,13 @@
 //     Shift selects the next splice; Organize selects splices by knob position (equal zones). A newly selected splice starts
 //     to play when the gene in progress ends.
 //
+//   - Erase Splice (milestone 8) removes the selected splice from the reel and closes the gap (on a reel of one splice it empties
+//     the reel). Undo puts back what the last edit changed (a recording, a marker added or taken away, Erase Splice, Clear Reel);
+//     pressed again it does that edit again. Only the newest edit can be undone.
+//   - Big edits (Erase Splice on a long reel, Undo, Redo) are carried out a few thousand samples at a time over a number of audio
+//     blocks, so Logic never stalls; while that goes on the reel is silent and the engine is "busy" and ignores the edit buttons.
+//   - Recording over existing audio (Time Lag Accumulation) writes back through a gentle limiter, so many passes cannot run away.
+//
 // Plain C++17. No JUCE, no plugin code.
 
 #pragma once
@@ -28,6 +36,7 @@
 #include "Params.h"
 #include "Reel.h"
 #include "core/SpliceMap.h"
+#include "core/UndoStore.h"
 
 #include <atomic>
 
@@ -75,6 +84,9 @@ namespace phe
             int recPos = 0;              // record head
             bool recording = false;
             bool playing = false;
+            int recKind = 0;             // while recording: 1 first recording, 2 over the splice (Time Lag Accumulation), 3 new splice
+            bool busy = false;           // a big edit (Erase Splice, Undo, Redo) is being carried out
+            int undoState = 0;           // 0 nothing to undo, 1 Undo will act, 2 Redo will act
         };
         ReelView getReelView() const;
         const Reel& getReel() const { return reel; }
@@ -88,7 +100,9 @@ namespace phe
 
         // The momentary buttons (Splice, Shift, Delete Splice Marker, Delete All Markers) act the moment they go on, then
         // the wrapper switches them back off. This returns a mask of the ones that acted since the last call.
-        static constexpr int kButtonSplice = 1, kButtonShift = 2, kButtonDeleteMarker = 4, kButtonDeleteAllMarkers = 8;
+        // Erase Splice and Undo (milestone 8) act the same way.
+        static constexpr int kButtonSplice = 1, kButtonShift = 2, kButtonDeleteMarker = 4, kButtonDeleteAllMarkers = 8,
+                             kButtonErase = 16, kButtonUndo = 32;
         int takeHandledButtons() { return handledButtons.exchange (0); }
 
     private:
@@ -106,6 +120,19 @@ namespace phe
         void flushPeak();
         void setPlayerTargets();
 
+        // Edits and undo (milestone 8)
+        using EditState = core::EditState;
+        EditState captureState() const;
+        void commitStep (const EditState& before);       // an edit has just changed something: it becomes the step Undo undoes
+        void saveChunkForUndo (int position);
+        void eraseSelectedSplice();
+        void undoOrRedo();
+        bool runJobSlice (int budgetChunks);             // true when the job is finished
+        void finishJob();
+        void finishJobNow();
+        void abandonJob();
+        bool playOn() const { return params.play || params.playMode == 2; }     // trigger loop always plays
+
         Params params;
         Reel reel;
 
@@ -113,11 +140,13 @@ namespace phe
         bool firstBlock = true;
         bool prevRec = false, prevPlay = false, prevClear = false;
         bool prevRecNew = false, prevSplice = false, prevShift = false, prevDeleteMarker = false, prevDeleteAll = false;
+        bool prevErase = false, prevUndo = false;
 
         // Splices
         core::SpliceMap map;
         core::SpliceSelector selector;
         bool selectorSynced = false;      // the very first block starts the selection from the Organize knob; later blocks never do
+        int lastSelStart = 0;             // where the selected splice began last block (Organize Timing "immediately" watches it)
 
         // Playback: the tape head and the gene player
         GenePlayer player;
@@ -133,6 +162,22 @@ namespace phe
         int recPos = 0;
         float recGate = 0.0f;            // 0..1: how much of the new signal is written (ramped to avoid clicks)
 
+        // The undo store, and the big edit that is in progress (if any)
+        core::UndoStore undo;
+        int recSavedChunk = -1;          // the chunk the record head last saved for undo (so most samples need no check)
+        struct Job
+        {
+            enum class Kind { none, eraseMove, swapBack };
+            enum class Phase { audio, peaks };
+            Kind kind = Kind::none;
+            Phase phase = Phase::audio;
+            int cursor = 0;              // erase: samples moved so far; undo: the next chunk to swap
+            int eraseStart = 0, eraseEnd = 0, oldLength = 0, spliceIndex = 0;     // erase: the removed stretch and the old reel length
+            EditState target;            // undo: how things will be when the swap is done
+            int peakFrom = 0, peakTo = 0, peakCursor = 0;                         // waveform slices to redraw (in samples)
+        } job;
+        bool busy = false;
+
         // Smoothed control values
         float gainIn = 1.0f, gainOut = 1.0f, sos = 0.5f;
 
@@ -146,7 +191,8 @@ namespace phe
         std::atomic<int> viewNewBase { 0 }, viewSpliceLength { 0 };
         std::atomic<int> viewRecEnd { 0 };       // while recording a new splice: how far the recording has got (else 0)
         std::atomic<float> viewGeneSeconds { 0.0f }, viewRate { 0.0f };
-        std::atomic<bool> viewRecording { false }, viewPlaying { false };
+        std::atomic<bool> viewRecording { false }, viewPlaying { false }, viewBusy { false };
+        std::atomic<int> viewRecKind { 0 }, viewUndoState { 0 };
         std::atomic<bool> recordStopped { false }, clearHandled { false }, newSpliceStopped { false };
         std::atomic<int> handledButtons { 0 };
     };

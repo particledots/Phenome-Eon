@@ -4,66 +4,45 @@ An original AU / VST3 effect for Logic Pro, inspired by the feel of a Eurorack g
 Make Noise Morphagene). All DSP is our own code; it is not a port or copy of anything, and it is not affiliated
 with Make Noise.
 
-Status: **milestone 7 (splices): built and checked automatically; not yet tested in Logic.**
-Milestones 1 to 6 (mockup, empty build, styled panel, reel / Rec / Sound On Sound / playback, tape head and genes, Morph and
-Pitch Scale) were tested in Logic on both Macs and work.
+Status: **milestone 8 (Erase Splice, Undo, Time Lag polish, option menus): built and checked automatically; not yet tested in Logic.**
+Milestones 1 to 7 (mockup, empty build, styled panel, reel / Rec / Sound On Sound / playback, tape head and genes, Morph and
+Pitch Scale, splices) were tested in Logic on both Macs and work.
 
-Version 0.7.0 (milestone 7, **not yet tested in Logic**): splices. Same styled panel and the same 21 control ids as 0.6.0.
-Mono or stereo in, the same out. Everything from 0.6.0 works as before when there are no markers (one splice = the whole reel).
+Version 0.8.0 (milestone 8, **not yet tested in Logic**). Same styled panel and the same 21 control ids as 0.7.0, plus six
+new menu ids at the end (27 in all). Everything from 0.7.0 works as before while the new menus are left on their first choice.
 
-- **What a splice is.** A splice marker is a cut mark on the reel. With no markers the reel is one splice; each marker adds
-  one more, up to 299 markers (300 splices). The reel display draws the markers (dashed white lines) with a number for each
-  splice under the waveform. The selected splice is tinted amber.
-- **Everything plays inside the selected splice.** Slide, Gene-Size, Vari-Speed, Morph and Pitch Scale now work on the
-  selected splice instead of on the whole reel: Slide 0 is the start of the splice, "whole splice" is one lap of it (the
-  Gene-Size read-out says "whole splice" when there are several), and a gene that runs past the end of the splice carries on
-  from its start.
-- **SPLICE** (button): drops a marker where the tape head is now. The splice it cuts keeps its number and becomes the part
-  *before* the marker, so the loop you were hearing becomes the stretch up to the point where you pressed. A splice cannot be
-  shorter than 64 samples (a press that would make one is ignored).
-- **SHIFT** (button): selects the next splice (after the last, back to the first).
-- **ORGANIZE** (knob): selects splices by position. The knob is cut into equal zones, one per splice, however long each splice
-  is (the read-out says "splice 3 of 5"). **Organize wins over Shift:** Shift moves on from wherever Organize last put you, and
-  as soon as the Organize knob moves into a different zone it takes over again. Adding or removing markers does not by
-  itself change the selection.
-- **A newly selected splice does not start at once.** As on the module, the gene in progress plays to its end first, and the
-  next gene starts in the new splice. The status line shows "2 / 5 > 3" while splice 3 is waiting to take over from splice 2.
-- **DELETE SPLICE MARKER** (button): takes away the marker at the end of the selected splice, joining it with the next one.
-  On the last splice there is no marker after it, so nothing happens.
-- **DELETE ALL MARKERS** (button): the whole reel becomes one splice again. (The audio is not touched.)
-- **REC NEW SPLICE** (a switch, like REC): on = record a new splice onto the end of the reel; off = stop. What you hear is
-  what is recorded (the Sound On Sound mix, which can include the other splices as they play), so Sound On Sound decides
-  whether the new splice holds live sound, other splices, or both. The reel grows as it records; the old splices keep
-  playing. When you stop, a marker is placed at the old end of the reel, the new splice is selected, and it starts looping
-  straight away (the old genes fade out over about a millisecond). Pressing REC while a new splice is recording stops it.
-  The take stops by itself when the reel is full (2.9 minutes). A take shorter than 64 samples is thrown away. On an empty
-  reel, REC NEW SPLICE records the first take, as REC does.
-- **REC** (over existing audio) now stays inside the splice the playhead is in: it records from the playhead round and round
-  that splice until switched off (Time Lag Accumulation), and never touches the other splices.
-- **CLEAR REEL** also takes all the markers away.
-- **Starting position changed.** Organize now starts fully left (the first splice). A project saved with 0.6.0 stored 0.5
-  and keeps it; with no markers it makes no difference.
-- **Splice, Shift, Delete Splice Marker and Delete All Markers** act the moment they go on, then the plugin switches them
-  back off by itself (like Clear Reel). A project saved with any of them on, or with Rec New Splice on, opens with them off.
-- **Not working yet (stored and automatable, but no sound change):** ERASE SPLICE and UNDO; Load WAV, Save WAV, Reel folder.
-  Splice markers are not saved with the project yet (they will be saved with the reel file in milestone 9), and the reel
-  itself is not saved with the project, as before.
-- **When the buttons act:** the buttons act while Logic is processing audio (playing). Logic does not run effects while
-  stopped, so press Play in Logic, then use the buttons. Marker positions are set at the start of an audio block (a few
-  milliseconds).
+- **ERASE SPLICE** (button): cuts the selected splice out of the reel and closes the gap (the audio after it moves up, the
+  later markers move with it). The splice after the erased one becomes the selected one (after the last splice, the new last
+  one). On a reel of one splice it empties the reel. Refused while recording. Long reels are edited in small steps over a
+  few audio blocks ("BUSY" shows in the status line, silent meanwhile) so Logic never stalls.
+- **UNDO** (button): undoes the newest edit: a recording (first take, Time Lag Accumulation pass or new splice), Splice,
+  Delete Splice Marker, Delete All Markers, Erase Splice, Clear Reel. **One level only**, and pressing it again redoes (the
+  button then reads REDO). Starting a new edit forgets the one before it. Refused while recording; changing the sample rate
+  forgets the history. The undo copy is made a piece at a time just before audio is changed, so recording costs nothing extra.
+- **Time Lag Accumulation polish:** when a pass is laid over audio already on the reel, what is written goes through a gentle
+  limiter (untouched below 0.8, bends towards but never reaches full scale), so many passes pile up without running away.
+  The status line says "REC TLA" while that is happening.
+- **OPTIONS** (button, bottom right of the styled panel; the same six menus are in the plain-slider window). The first choice
+  of each is the normal behaviour:
+  - *Vari-Speed Mode:* Classic / Octave scale (both ways) / Octave scale (forward only): speeds 1/128x to 2x in even
+    musical steps; Pitch Snap still works on top.
+  - *Record Source:* Mix (as set by Sound On Sound) / Input only (always records just the live input).
+  - *Organize Timing:* At end of gene / Immediately.
+  - *Gene Window:* Short fades / Smooth windows (each gene swells up and dies away).
+  - *Play Mode:* Classic / Momentary (sound only while Play is held) / Trigger loop (keeps looping, Play jumps back to the start).
+  - *Morph Chord:* Random pitch-ups / Octave chord / Major / Minor / Fifths (what Morph past 2:30 adds).
+- **Still not working:** Load WAV, Save WAV, Reel folder. Splice markers and the reel itself are not saved with the project yet.
+- **When the buttons act:** while Logic is processing audio (playing).
 
-What has been checked automatically (before any test in Logic): the engine self-test (477 checks: everything from 0.6.0,
-plus the marker list and its limits, the Organize zones, Shift and the Organize-over-Shift rule, the selection staying put
-when markers are added or removed, a marker landing exactly where the head is, a new splice waiting for the gene in progress
-to end, playback staying inside its splice, deleting markers, recording over a splice not touching the others, recording a
-new splice (what is written, the marker, selection, looping straight away, stopping by itself when full, being refused or
-thrown away when it should be, Rec stopping it), Clear Reel and a sample-rate change keeping the markers right, results not
-depending on block size, and long random sequences of every button keeping the sound finite and the markers valid), also
-run under a memory-error checker with no errors; the preview tool (draws the windows to pictures, moves every control, drives
-the real plugin code with audio; 174 checks); and the GitHub build. Not yet tested: anything in Logic (M4 Mac mini, macOS
-Tahoe, Logic 11.2.2; Intel Mac, macOS 12.7.8, Logic 10.7.8).
+What has been checked automatically (before any test in Logic): the engine self-test (638 checks: everything from 0.7.0,
+plus the undo store, erasing in every position and on a long reel in small steps at several block sizes, Undo / Redo of every
+kind of edit and exact restoring of audio and markers, the limiter, each option menu, and long random sequences of every
+button), also run under a memory-error checker with no errors; the preview tool (draws the windows, moves every control,
+drives the real plugin code with audio); and the GitHub build. Not yet tested: anything in Logic (M4 Mac mini, macOS Tahoe,
+Logic 11.2.2; Intel Mac, macOS 12.7.8, Logic 10.7.8).
 
-Earlier versions: 0.6.0 Morph and Pitch Scale (tested, works); 0.5.0 tape head, genes, Vari-Speed, Pitch Snap (tested, works);
+Version 0.7.0 (milestone 7, tested, works): splices (Splice, Shift, Organize, Delete Splice Marker, Delete All Markers, Rec New
+Splice, and recording over a splice staying inside it). Earlier versions: 0.6.0 Morph and Pitch Scale (tested, works); 0.5.0 tape head, genes, Vari-Speed, Pitch Snap (tested, works);
 0.4.0 reel, Rec, Sound On Sound, basic playback (tested, works); 0.3.1 styled panel on the empty build (tested, works); 0.2.0
 empty build with plain sliders (tested, works).
 

@@ -94,9 +94,9 @@ namespace
     }
 
     // Vari-Speed read-out: the speed (with Pitch Snap off), or the note it lands on (with Pitch Snap on).
-    juce::String variSpeedText (double value, int pitchSnap)
+    juce::String variSpeedText (double value, int pitchSnap, int mode)
     {
-        const auto r = phe::dsp::variSpeed ((float) value, pitchSnap);
+        const auto r = phe::dsp::variSpeed ((float) value, pitchSnap, mode);
         if (r.stopped)
             return "STOP";
         const juce::String direction = r.rate < 0.0f ? "rev " : "fwd ";
@@ -170,6 +170,7 @@ void ReelDisplay::refresh()
         || now.geneSpliceStart != view.geneSpliceStart || now.geneSpliceLength != view.geneSpliceLength
         || now.numSplices != view.numSplices || now.selectedSplice != view.selectedSplice
         || now.playingSplice != view.playingSplice || now.newSpliceBase != view.newSpliceBase
+        || now.busy != view.busy || now.undoState != view.undoState || now.recKind != view.recKind
         || ! juce::exactlyEqual (now.geneSeconds, view.geneSeconds) || ! juce::exactlyEqual (now.rate, view.rate))
     {
         view = now;
@@ -209,7 +210,8 @@ void ReelDisplay::paint (juce::Graphics& g)
 
     juce::String state = "EMPTY";
     juce::Colour stateColour = muted;
-    if (recording)             { state = "REC";  stateColour = recRed; }
+    if (! demo && view.busy)   { state = "BUSY"; stateColour = amber; }
+    else if (recording)        { state = view.recKind == 2 ? "REC TLA" : "REC";  stateColour = recRed; }
     else if (haveReel)         { state = (view.playing && std::fabs (view.rate) > 0.002f) ? "PLAY" : "STOP"; stateColour = text; }
 
     g.setColour (well);
@@ -566,6 +568,15 @@ void KnobCard::addNote (const juce::String& text, juce::Rectangle<int> area, juc
     notes.push_back ({ text, area, j });
 }
 
+void KnobCard::setNoteText (size_t index, const juce::String& newText)
+{
+    if (index < notes.size() && notes[index].text != newText)
+    {
+        notes[index].text = newText;
+        repaint();
+    }
+}
+
 void KnobCard::addExtra (juce::Component& c, juce::Rectangle<int> area)
 {
     addAndMakeVisible (c);
@@ -604,6 +615,72 @@ void KnobCard::paint (juce::Graphics& g)
 }
 
 //==============================================================================
+OptionsSheet::OptionsSheet()
+{
+    close.onClick = [this] { if (onClose) onClose(); };
+    addAndMakeVisible (close);
+}
+
+void OptionsSheet::addRow (const juce::String& title, juce::ComboBox& box, const juce::String& explanation)
+{
+    addAndMakeVisible (box);
+    rows.push_back ({ title, explanation, &box });
+    resized();
+}
+
+namespace
+{
+    constexpr int kSheetW = 860, kSheetH = 640, kSheetRowH = 82;
+    juce::Rectangle<int> sheetBox (juce::Rectangle<int> whole)
+    {
+        return juce::Rectangle<int> (kSheetW, kSheetH).withCentre (whole.getCentre());
+    }
+}
+
+void OptionsSheet::resized()
+{
+    const auto box = sheetBox (getLocalBounds());
+    int y = box.getY() + 74;
+    for (auto& r : rows)
+    {
+        r.box->setBounds (box.getRight() - 24 - 300, y, 300, 32);
+        y += kSheetRowH;
+    }
+    close.setBounds (box.getRight() - 24 - 110, box.getY() + 20, 110, 32);
+}
+
+void OptionsSheet::paint (juce::Graphics& g)
+{
+    g.fillAll (background.withAlpha (0.82f));
+    const auto box = sheetBox (getLocalBounds());
+    g.setColour (card);
+    g.fillRoundedRectangle (box.toFloat(), 10.0f);
+    g.setColour (cardEdge);
+    g.drawRoundedRectangle (box.toFloat().reduced (0.5f), 10.0f, 1.0f);
+
+    g.setColour (text);
+    g.setFont (sans (26.0f, true, 0.04f));
+    g.drawText ("OPTIONS", box.getX() + 24, box.getY() + 18, 300, 36, juce::Justification::centredLeft, false);
+    g.setColour (muted);
+    g.setFont (sans (14.0f));
+    g.drawText ("The first choice of every menu is the normal behaviour.", box.getX() + 190, box.getY() + 18, 480, 36,
+                juce::Justification::centredLeft, false);
+
+    int y = box.getY() + 74;
+    for (auto& r : rows)
+    {
+        g.setColour (amber);
+        g.setFont (sans (17.0f, true, 0.04f));
+        g.drawText (r.title, box.getX() + 24, y, 320, 32, juce::Justification::centredLeft, false);
+        g.setColour (muted);
+        g.setFont (sans (13.5f));
+        g.drawFittedText (r.explanation, juce::Rectangle<int> (box.getX() + 24, y + 36, kSheetW - 48, 38),
+                          juce::Justification::topLeft, 2, 1.0f);
+        y += kSheetRowH;
+    }
+}
+
+//==============================================================================
 StyledPanel::StyledPanel (juce::AudioProcessorValueTreeState& s, juce::AudioProcessor& processor, const phe::Engine& engine,
                           const juce::String& version)
     : state (s), host (processor), versionText (version)
@@ -618,7 +695,8 @@ StyledPanel::StyledPanel (juce::AudioProcessorValueTreeState& s, juce::AudioProc
                            [this] (double v)
                            {
                                const int snap = juce::jlimit (0, 2, (int) std::lround (state.getRawParameterValue (PheParams::pitchSnap)->load()));
-                               return variSpeedText (v, snap);
+                               const int mode = juce::jlimit (0, 2, (int) std::lround (state.getRawParameterValue (PheParams::variSpeedMode)->load()));
+                               return variSpeedText (v, snap, mode);
                            });
     auto& morph = addKnob (PheParams::morph,     "MORPH",      KnobCard::Size::large, morphText);
     auto& organize = addKnob (PheParams::organize, "ORGANIZE", KnobCard::Size::small,
@@ -633,6 +711,7 @@ StyledPanel::StyledPanel (juce::AudioProcessorValueTreeState& s, juce::AudioProc
     output.addNote ("0.0 dB = no change", { 7, 194, 130, 22 }, juce::Justification::topLeft);
 
     engineForReadouts = &engine;
+    variCard = &vari;
     organizeCard = &organize;
     geneCard = &gene;
 
@@ -648,6 +727,28 @@ StyledPanel::StyledPanel (juce::AudioProcessorValueTreeState& s, juce::AudioProc
     vari.addExtra (snap.box, { 7, 220, 125, 32 });
     vari.addNote ("middle = stop; 2:30 = 1x", { 0, 256, kCardWidth, 20 }, juce::Justification::centred);
     snap.box.onChange = [&vari] { vari.repaint(); };         // the read-out changes with the Pitch Snap menu
+
+    // ---- the Options sheet: the six firmware-option menus (same parameters as in the plain-slider window) ----
+    options.addRow ("Vari-Speed Mode", makeChoice (PheParams::variSpeedMode).box,
+                    "Classic: the usual law, 1x at 2:30. Octave scale: equal knob turns are equal pitch steps (1/128x up to 2x), "
+                    "either both ways from the middle or forward only.");
+    options.addRow ("Record Source", makeChoice (PheParams::recordSource).box,
+                    "Mix: records what you hear, as set by Sound On Sound. Input only: always records just the live input.");
+    options.addRow ("Organize Timing", makeChoice (PheParams::organizeMode).box,
+                    "At end of gene: a newly chosen splice takes over when the current gene ends. Immediately: as soon as it is chosen.");
+    options.addRow ("Gene Window", makeChoice (PheParams::geneWindow).box,
+                    "Short fades: genes have tiny fades at their edges. Smooth windows: each gene swells up and dies away.");
+    options.addRow ("Play Mode", makeChoice (PheParams::playMode).box,
+                    "Classic: Play starts and stops. Momentary: sound only while Play is held. "
+                    "Trigger loop: keeps looping, and Play jumps back to the start.");
+    options.addRow ("Morph Chord", makeChoice (PheParams::morphChord).box,
+                    "What Morph past 2:30 adds: random pitch-ups, or a fixed chord (octaves, major, minor, fifths).");
+    options.onClose = [this] { showOptions (false); };
+    options.setVisible (false);
+    addChildComponent (options);
+
+    optionsButton.onClick = [this] { showOptions (! options.isVisible()); };
+    addAndMakeVisible (optionsButton);
 
     // Under Morph: Pitch Scale
     auto& scale = makeChoice (PheParams::pitchScale);
@@ -727,6 +828,14 @@ void StyledPanel::addPanelButton (const char* id, const juce::String& text, bool
     buttons.push_back (std::move (item));
 }
 
+void StyledPanel::showOptions (bool shouldShow)
+{
+    options.setVisible (shouldShow);
+    if (shouldShow)
+        options.toFront (false);
+    optionsButton.setButtonText (shouldShow ? "CLOSE OPTIONS" : "OPTIONS");
+}
+
 void StyledPanel::timerCallback()
 {
     const double rate = host.getSampleRate();
@@ -739,6 +848,26 @@ void StyledPanel::timerCallback()
     }
 
     reel.refresh();
+
+    // Undo becomes Redo once an edit has been undone; the Vari-Speed caption and read-out follow the Vari-Speed Mode menu.
+    if (engineForReadouts != nullptr)
+    {
+        const int undoState = engineForReadouts->getReelView().undoState;
+        if (undoState != shownUndoState)
+        {
+            shownUndoState = undoState;
+            buttons[9]->button.setButtonText (undoState == 2 ? "REDO" : "UNDO");
+        }
+    }
+    const int variMode = juce::jlimit (0, 2, (int) std::lround (state.getRawParameterValue (PheParams::variSpeedMode)->load()));
+    if (variMode != shownVariMode && variCard != nullptr)
+    {
+        shownVariMode = variMode;
+        variCard->setNoteText (1, variMode == 0 ? "middle = stop; 2:30 = 1x"
+                                                : (variMode == 1 ? "middle = stop; ends = 2x"
+                                                                 : "left = stop; right = 2x"));
+        variCard->repaint();
+    }
 
     // Organize and Gene-Size say things about the splices: redraw them when the splices change.
     if (engineForReadouts != nullptr)
@@ -805,7 +934,7 @@ void StyledPanel::paint (juce::Graphics& g)
 
     // Footer
     g.setFont (mono (14.0f));
-    g.drawText ("PhenomeEon v" + versionText + "  -  Erase Splice, Undo and the file buttons do not work yet",
+    g.drawText ("PhenomeEon v" + versionText + "  -  the Load / Save WAV and Reel folder buttons do not work yet",
                 juce::Rectangle<int> (kMargin, 757, 900, 28), juce::Justification::centredLeft, false);
 }
 
@@ -836,4 +965,6 @@ void StyledPanel::resized()
     reelFolder.setBounds (642, by, 96, 35);
 
     plainSliders.setBounds (kWidth - kMargin - 140, 757, 140, 28);
+    optionsButton.setBounds (kWidth - kMargin - 140 - 12 - 150, 757, 150, 28);
+    options.setBounds (getLocalBounds());
 }

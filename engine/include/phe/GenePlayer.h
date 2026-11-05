@@ -63,6 +63,8 @@ namespace phe
             int scaleMask = 0;              // Pitch Scale as a 12-note mask (0 = Off); see core/Scales.h
             int spliceStart = 0;            // the splice the next gene starts in: where it begins in the reel (samples) ...
             int spliceLength = 0;           // ... and how long it is (0 = the whole reel, the same as no markers)
+            bool smoothWindow = false;      // Gene Window option: short genes fade in and out over their whole length
+            int chordMode = 0;              // Morph Chord option: 0 = random pitch-ups, otherwise an entry of dsp::kMorphChords
         };
 
         // What came out of one step. 'heard' has the gene fades; 'record' is what goes back onto the reel when
@@ -90,6 +92,9 @@ namespace phe
         void start (const Reel& reel);
         void stop();
         bool isPlaying() const { return playing; }
+
+        // Every gene now playing fades out over a millisecond or two and none starts again (Play Mode "momentary").
+        void release();
 
         // Moves straight to the selected splice (used when a new splice has just been recorded): the genes now playing
         // fade out over a millisecond or two instead of cutting off, and a fresh gene starts in the selected splice.

@@ -1,6 +1,7 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
 #include <cmath>
+#include <phe/core/Morph.h>
 
 PhenomeEonProcessor::PhenomeEonProcessor()
     : AudioProcessor (BusesProperties()
@@ -46,6 +47,8 @@ void PhenomeEonProcessor::timerCallback()
     if ((handled & phe::Engine::kButtonShift) != 0)            switchOff (PheParams::shift);
     if ((handled & phe::Engine::kButtonDeleteMarker) != 0)     switchOff (PheParams::deleteMarker);
     if ((handled & phe::Engine::kButtonDeleteAllMarkers) != 0) switchOff (PheParams::deleteAllMarkers);
+    if ((handled & phe::Engine::kButtonErase) != 0)            switchOff (PheParams::eraseSplice);
+    if ((handled & phe::Engine::kButtonUndo) != 0)             switchOff (PheParams::undo);
 
     // A project saved while one of these was on must not record, clear or cut when it is opened.
     if (switchTransientButtonsOff.exchange (false))
@@ -57,6 +60,8 @@ void PhenomeEonProcessor::timerCallback()
         switchOff (PheParams::shift);
         switchOff (PheParams::deleteMarker);
         switchOff (PheParams::deleteAllMarkers);
+        switchOff (PheParams::eraseSplice);
+        switchOff (PheParams::undo);
     }
 }
 
@@ -106,6 +111,14 @@ phe::Params PhenomeEonProcessor::readParams() const
     p.eraseSplice      = on (PheParams::eraseSplice);
     p.clearReel        = on (PheParams::clearReel);
     p.undo             = on (PheParams::undo);
+
+    auto choiceOf = [&get] (const char* id, int maxIndex) { return juce::jlimit (0, maxIndex, (int) std::lround (get (id))); };
+    p.variSpeedMode = choiceOf (PheParams::variSpeedMode, 2);
+    p.recordSource  = choiceOf (PheParams::recordSource, 1);
+    p.organizeMode  = choiceOf (PheParams::organizeMode, 1);
+    p.geneWindow    = choiceOf (PheParams::geneWindow, 1);
+    p.playMode      = choiceOf (PheParams::playMode, 2);
+    p.morphChord    = choiceOf (PheParams::morphChord, phe::dsp::kNumMorphChords - 1);
     return p;
 }
 

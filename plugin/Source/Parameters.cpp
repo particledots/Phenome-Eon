@@ -1,6 +1,7 @@
 #include "Parameters.h"
 #include <phe/Params.h>
 #include <phe/core/Scales.h>
+#include <phe/core/Morph.h>
 
 namespace PheParams
 {
@@ -63,6 +64,21 @@ juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
     layout.add (button (eraseSplice,      "Erase Splice"));
     layout.add (button (clearReel,        "Clear Reel"));
     layout.add (button (undo,             "Undo"));
+
+    // Firmware-option menus (milestone 8): appended, so older saved projects still load (they get the normal behaviour).
+    auto choice = [&layout] (const char* id, const char* name, juce::StringArray names)
+    {
+        layout.add (std::make_unique<juce::AudioParameterChoice> (juce::ParameterID { id, 1 }, name, names, 0));
+    };
+    choice (variSpeedMode, "Vari-Speed Mode", { "Classic", "Octave scale (both ways)", "Octave scale (forward only)" });
+    choice (recordSource,  "Record Source",   { "Mix (Sound On Sound)", "Input only" });
+    choice (organizeMode,  "Organize Timing", { "At end of gene", "Immediately" });
+    choice (geneWindow,    "Gene Window",     { "Short fades", "Smooth windows" });
+    choice (playMode,      "Play Mode",       { "Classic", "Momentary", "Trigger loop" });
+    juce::StringArray chordNames;
+    for (int i = 0; i < phe::dsp::kNumMorphChords; ++i)
+        chordNames.add (phe::dsp::kMorphChords[i].name);
+    choice (morphChord,    "Morph Chord",     chordNames);
 
     return layout;
 }

@@ -20,8 +20,8 @@
 class PhenomeEonSliderPanel : public juce::Component
 {
 public:
-    static constexpr int kWidth  = 900;
-    static constexpr int kHeight = 600;
+    static constexpr int kWidth  = 1200;
+    static constexpr int kHeight = 800;
 
     explicit PhenomeEonSliderPanel (juce::AudioProcessorValueTreeState&);
     ~PhenomeEonSliderPanel() override = default;

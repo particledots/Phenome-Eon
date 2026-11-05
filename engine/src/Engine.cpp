@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 
 namespace phe
 {
@@ -15,6 +16,8 @@ namespace
     constexpr int    kMinFirstRecording = 64;       // a first recording (or a new splice) shorter than this many samples is thrown away
     constexpr double kGateRampSeconds   = 0.004;    // punching in and out of a recording over existing audio
     constexpr double kSmoothSeconds     = 0.010;    // level knobs glide instead of jumping
+    constexpr int    kJobChunksPerBlock = 8;        // a big edit (Erase Splice, Undo) moves this many chunks (about 2.7 s of audio) per block
+    constexpr int    kJobBucketsPerBlock = 48;      // ... and redraws this many waveform slices per block
 
     // Anything that is not a normal number is treated as silence, so a bad sample from the host can never
     // get into the reel and stay there forever.
@@ -36,6 +39,8 @@ void Engine::prepare (double newSampleRate, int /*maxBlockSize*/, int /*numChann
     // otherwise whatever is recorded stays exactly as it is.
     if (reel.allocate (sampleRate))
     {
+        abandonJob();
+        undo.prepare (reel.capacity());                  // a new reel size: the undo history starts again
         recActive = recStopping = recFirst = recNew = false;
         peakBucket = -1;
 
@@ -47,7 +52,7 @@ void Engine::prepare (double newSampleRate, int /*maxBlockSize*/, int /*numChann
         selector.sync (params.organize, map.numSplices());
         selectorSynced = true;
 
-        if (params.play && reel.length() > 0)
+        if (playOn() && reel.length() > 0)
         {
             setPlayerTargets();
             player.start (reel);
@@ -59,11 +64,20 @@ void Engine::prepare (double newSampleRate, int /*maxBlockSize*/, int /*numChann
         viewRecEnd.store (0);
         viewRecording.store (false);
         viewPlaying.store (player.isPlaying());
+        viewBusy.store (false);
+        viewUndoState.store (0);
+    }
+    else
+    {
+        finishJobNow();                                  // never leave a big edit half done
+        if (! undo.ready() && reel.capacity() > 0)
+            undo.prepare (reel.capacity());
     }
 }
 
 void Engine::reset()
 {
+    finishJobNow();
     if (recActive)
     {
         if (recFirst)
@@ -75,7 +89,7 @@ void Engine::reset()
         peakBucket = -1;
         signalRecordEnded();
     }
-    if (params.play && reel.length() > 0)
+    if (playOn() && reel.length() > 0)
     {
         setPlayerTargets();
         player.start (reel);
@@ -107,10 +121,12 @@ void Engine::startRecording()
     recStopping = false;
     recNew = false;
     peakBucket = -1;
+    recSavedChunk = -1;
 
     if (length <= 0)
     {
         // First recording: the reel is empty, so it grows as we record (and it becomes splice 1).
+        commitStep (captureState());                // the recording is one undoable step
         recActive = true;
         recFirst = true;
         recPos = 0;
@@ -125,6 +141,7 @@ void Engine::startRecording()
             signalRecordEnded();
             return;
         }
+        commitStep (captureState());
         recActive = true;
         recFirst = false;
         recNew = true;
@@ -135,6 +152,7 @@ void Engine::startRecording()
     else
     {
         // Recording over the splice the playhead is in, starting where the playhead is.
+        commitStep (captureState());
         recActive = true;
         recFirst = false;
         const int pos = std::min (length - 1, std::max (0, (int) player.headPosition (reel)));
@@ -173,13 +191,15 @@ void Engine::finishFirstRecording()
     {
         reel.clear();                               // too short to be a recording
         player.stop();
+        undo.cancel();                              // nothing changed: nothing to undo
     }
     else
     {
         reel.setLength (length);
         map.clear();                                // a new reel is one splice
         selector.sync (params.organize, 1);
-        if (params.play)
+        lastSelStart = 0;
+        if (playOn())
             player.start (reel);                    // the new recording starts looping straight away (if Play is on)
         else
             player.stop();
@@ -201,6 +221,7 @@ void Engine::finishNewSplice()
     if (end - base < kMinFirstRecording)
     {
         reel.refreshPeaksFrom (base);               // too short to be a splice: the reel stays as it was
+        undo.cancel();
         return;
     }
 
@@ -218,7 +239,9 @@ void Engine::finishNewSplice()
 void Engine::restartPlayback()
 {
     setPlayerTargets();
-    if (params.play && reel.length() > 0)
+    const int length = reel.length();
+    lastSelStart = length > 0 ? map.start (std::min (map.numSplices() - 1, std::max (0, selector.selected()))) : 0;
+    if (playOn() && length > 0)
         player.switchSplice (reel);
     else
         player.stop();
@@ -231,12 +254,15 @@ void Engine::clearReel()
         recActive = recStopping = recFirst = recNew = false;
         signalRecordEnded();
     }
+    const EditState before = captureState();
     peakBucket = -1;
     reel.clear();
     map.clear();
     selector.sync (params.organize, 1);
     player.stop();
     recPos = 0;
+    if (before.length > 0)
+        commitStep (before);                        // the audio itself is untouched, so Undo only has to bring back the length and markers
     clearHandled.store (true);
 }
 
@@ -249,25 +275,203 @@ void Engine::dropMarker()
     if (length <= 0 || (recActive && recFirst))
         return;
 
+    const EditState before = captureState();
     const int position = (int) player.headPosition (reel);
     const int j = map.addMarker (position, length);
     if (j >= 0)
+    {
         selector.markerInserted (j);
+        commitStep (before);
+    }
 }
 
 // DELETE SPLICE MARKER: takes away the marker at the end of the selected splice, so it joins the next one.
 void Engine::deleteMarker()
 {
     const int k = selector.selected();
+    const EditState before = captureState();
     if (map.removeMarker (k))
+    {
         selector.markerRemoved (k);
+        commitStep (before);
+    }
 }
 
 // DELETE ALL MARKERS: the whole reel becomes one splice.
 void Engine::deleteAllMarkers()
 {
+    if (map.numMarkers() == 0)
+        return;
+    const EditState before = captureState();
     map.clear();
     selector.sync (params.organize, 1);
+    commitStep (before);
+}
+
+//==============================================================================
+// Edits and undo (milestone 8)
+
+Engine::EditState Engine::captureState() const
+{
+    EditState state;
+    state.length = reel.length();
+    state.selected = selector.selected();
+    state.numMarkers = map.snapshot (state.markers, core::kMaxSpliceMarkers);
+    return state;
+}
+
+// An edit that is about to change (or has just changed) the reel becomes the one step Undo can undo. A recording in progress
+// keeps its own step open until it ends, so marker edits made while recording are undone with the recording.
+void Engine::commitStep (const EditState& before)
+{
+    if (recActive)
+        return;
+    undo.begin (before);
+}
+
+void Engine::saveChunkForUndo (int position)
+{
+    const int chunk = position >> core::UndoStore::kChunkShift;
+    if (chunk != recSavedChunk)
+    {
+        float* channels[2] = { reel.channel (0), reel.channel (1) };
+        undo.save (channels, chunk);
+        recSavedChunk = chunk;
+    }
+}
+
+// ERASE SPLICE: takes the selected splice out of the reel and closes the gap. On a reel that is one splice, that is the
+// whole reel, so it is emptied (the same as Clear Reel). The audio after the splice is moved up over a number of blocks.
+void Engine::eraseSelectedSplice()
+{
+    const int length = reel.length();
+    if (length <= 0 || recActive || busy)
+        return;
+
+    if (map.numSplices() <= 1)
+    {
+        clearReel();
+        return;
+    }
+
+    const int j = std::min (map.numSplices() - 1, std::max (0, selector.selected()));
+    job = Job();
+    job.kind = Job::Kind::eraseMove;
+    job.spliceIndex = j;
+    job.eraseStart = map.start (j);
+    job.eraseEnd = map.end (j, length);
+    job.oldLength = length;
+    commitStep (captureState());
+    player.stop();
+    busy = true;
+}
+
+// UNDO: puts back what the last edit changed. The state it brings back is kept the other way round, so pressing again redoes it.
+void Engine::undoOrRedo()
+{
+    if (recActive || busy || ! undo.ready() || ! undo.hasStep())
+        return;
+
+    const EditState current = captureState();
+    job = Job();
+    job.kind = Job::Kind::swapBack;
+    job.target = undo.other();
+    job.cursor = std::max (0, undo.firstSaved());
+    undo.flip (current);
+    player.stop();
+    busy = true;
+}
+
+// Carries a big edit on a little. Returns true when it is completely done.
+bool Engine::runJobSlice (int budgetChunks)
+{
+    budgetChunks = std::max (1, std::min (budgetChunks, 4096));
+    float* channels[2] = { reel.channel (0), reel.channel (1) };
+
+    if (job.phase == Job::Phase::audio)
+    {
+        if (job.kind == Job::Kind::eraseMove)
+        {
+            const int removed = job.eraseEnd - job.eraseStart;
+            const int total = job.oldLength - job.eraseEnd;                       // samples after the splice, to be moved up
+            const int count = std::min (total - job.cursor, budgetChunks * core::UndoStore::kChunkFrames);
+            if (count > 0)
+            {
+                const int to = job.eraseStart + job.cursor, from = job.eraseEnd + job.cursor;
+                undo.saveRange (channels, to, to + count);                         // the old audio is kept for Undo first
+                for (int c = 0; c < 2; ++c)
+                    std::memmove (channels[c] + to, channels[c] + from, (size_t) count * sizeof (float));
+                job.cursor += count;
+            }
+            if (job.cursor < total)
+                return false;
+
+            map.eraseSplice (job.spliceIndex, job.oldLength);
+            reel.setLength (job.oldLength - removed);
+            selector.select (std::min (job.spliceIndex, map.numSplices() - 1));
+            job.peakFrom = job.eraseStart;
+            job.peakTo = job.oldLength;
+        }
+        else if (job.kind == Job::Kind::swapBack)
+        {
+            const int last = undo.lastSaved();
+            int c = job.cursor;
+            for (int n = 0; n < budgetChunks && c <= last; ++n, ++c)
+                undo.swap (channels, c);
+            job.cursor = c;
+            if (c <= last)
+                return false;
+
+            const int currentLength = reel.length();
+            reel.setLength (job.target.length);
+            map.setMarkers (job.target.markers, job.target.numMarkers);
+            selector.select (std::min (map.numSplices() - 1, std::max (0, job.target.selected)));
+
+            const int firstChanged = undo.firstSaved() >= 0 ? undo.firstSaved() * core::UndoStore::kChunkFrames : currentLength;
+            job.peakFrom = std::min (firstChanged, std::min (currentLength, job.target.length));
+            job.peakTo = std::max (currentLength, job.target.length);
+        }
+        else
+            return true;
+
+        job.phase = Job::Phase::peaks;
+        job.peakCursor = job.peakFrom / std::max (1, reel.samplesPerBucket());
+    }
+
+    // The waveform picture catches up, a few slices at a time.
+    const int perBucket = std::max (1, reel.samplesPerBucket());
+    const int endBucket = std::min (core::PeakOverview::kBuckets, (job.peakTo + perBucket - 1) / perBucket);
+    if (job.peakCursor < endBucket)
+    {
+        const int upTo = std::min (endBucket, job.peakCursor + kJobBucketsPerBlock * budgetChunks / kJobChunksPerBlock);
+        reel.rebuildPeakBuckets (job.peakCursor, upTo);
+        job.peakCursor = upTo;
+        if (job.peakCursor < endBucket)
+            return false;
+    }
+    return true;
+}
+
+void Engine::finishJob()
+{
+    job = Job();
+    busy = false;
+    viewBusy.store (false);
+    restartPlayback();              // plays from the start of the (now different) selected splice, if Play is on
+}
+
+void Engine::finishJobNow()
+{
+    while (busy)
+        if (runJobSlice (4096))
+            finishJob();
+}
+
+void Engine::abandonJob()
+{
+    job = Job();
+    busy = false;
+    viewBusy.store (false);
 }
 
 //==============================================================================
@@ -324,45 +528,84 @@ void Engine::process (float* const* channels, int numChannels, int numSamples)
         prevShift = params.shift;
         prevDeleteMarker = params.deleteMarker;
         prevDeleteAll = params.deleteAllMarkers;
+        prevErase = params.eraseSplice;
+        prevUndo = params.undo;
         if (! selectorSynced)
         {
             selector.sync (params.organize, map.numSplices());
             selectorSynced = true;
         }
         setPlayerTargets();
-        if (params.play && reel.length() > 0 && ! (recActive && recFirst))
+        lastSelStart = reel.length() > 0 ? map.start (std::min (map.numSplices() - 1, selector.selected())) : 0;
+        if (playOn() && reel.length() > 0 && ! (recActive && recFirst) && ! busy)
             player.start (reel);
         else
             player.stop();
         firstBlock = false;
     }
 
+    // A big edit in progress (Erase Splice, Undo, Redo) carries on a little each block; until it is done the reel is silent.
+    if (busy && runJobSlice (kJobChunksPerBlock))
+        finishJob();
+
     // ---- buttons: act when they go on ----
-    if (params.clearReel && ! prevClear)
-        clearReel();
+    const bool clearEdge     = params.clearReel && ! prevClear;
+    const bool spliceEdge    = params.splice && ! prevSplice;
+    const bool deleteEdge    = params.deleteMarker && ! prevDeleteMarker;
+    const bool deleteAllEdge = params.deleteAllMarkers && ! prevDeleteAll;
+    const bool eraseEdge     = params.eraseSplice && ! prevErase;
+    const bool undoEdge      = params.undo && ! prevUndo;
     prevClear = params.clearReel;
-
-    // Splice markers
-    if (params.splice && ! prevSplice)
-    {
-        dropMarker();
-        handledButtons.fetch_or (kButtonSplice);
-    }
     prevSplice = params.splice;
-
-    if (params.deleteMarker && ! prevDeleteMarker)
-    {
-        deleteMarker();
-        handledButtons.fetch_or (kButtonDeleteMarker);
-    }
     prevDeleteMarker = params.deleteMarker;
-
-    if (params.deleteAllMarkers && ! prevDeleteAll)
-    {
-        deleteAllMarkers();
-        handledButtons.fetch_or (kButtonDeleteAllMarkers);
-    }
     prevDeleteAll = params.deleteAllMarkers;
+    prevErase = params.eraseSplice;
+    prevUndo = params.undo;
+
+    if (busy)
+    {
+        // A big edit is still being carried out: the edit buttons are ignored, but they still go back off.
+        if (clearEdge)     clearHandled.store (true);
+        if (spliceEdge)    handledButtons.fetch_or (kButtonSplice);
+        if (deleteEdge)    handledButtons.fetch_or (kButtonDeleteMarker);
+        if (deleteAllEdge) handledButtons.fetch_or (kButtonDeleteAllMarkers);
+        if (eraseEdge)     handledButtons.fetch_or (kButtonErase);
+        if (undoEdge)      handledButtons.fetch_or (kButtonUndo);
+    }
+    else
+    {
+        if (clearEdge)
+            clearReel();
+
+        // Splice markers
+        if (spliceEdge)
+        {
+            dropMarker();
+            handledButtons.fetch_or (kButtonSplice);
+        }
+        if (deleteEdge)
+        {
+            deleteMarker();
+            handledButtons.fetch_or (kButtonDeleteMarker);
+        }
+        if (deleteAllEdge)
+        {
+            deleteAllMarkers();
+            handledButtons.fetch_or (kButtonDeleteAllMarkers);
+        }
+
+        // Erase Splice and Undo (both are refused while recording)
+        if (eraseEdge)
+        {
+            eraseSelectedSplice();
+            handledButtons.fetch_or (kButtonErase);
+        }
+        if (undoEdge)
+        {
+            undoOrRedo();
+            handledButtons.fetch_or (kButtonUndo);
+        }
+    }
 
     // Which splice is selected: Shift steps on, Organize (when it moves into another zone) wins over Shift.
     const bool shiftPressed = params.shift && ! prevShift;
@@ -374,10 +617,26 @@ void Engine::process (float* const* channels, int numChannels, int numSamples)
     // ---- the tape head and genes: what Vari-Speed, Pitch Snap, Gene-Size, Slide, Play and the selected splice ask for ----
     setPlayerTargets();
 
+    // Organize Timing "immediately": a newly selected splice takes over at once instead of when the gene ends.
+    {
+        const int length = reel.length();
+        const int selStart = length > 0 ? map.start (std::min (map.numSplices() - 1, std::max (0, selector.selected()))) : 0;
+        if (params.organizeMode == 1 && ! busy && playOn() && player.isPlaying() && length > 0 && ! (recActive && recFirst)
+            && selStart != lastSelStart)
+            player.switchSplice (reel);
+        lastSelStart = selStart;
+    }
+
+    // Play Mode "trigger loop" plays at all times (even when Play was off when this mode was chosen).
+    if (params.playMode == 2 && ! busy && ! player.isPlaying() && reel.length() > 0 && ! (recActive && recFirst))
+        player.start (reel);
+
     // Rec (a switch): on = recording over the splice the playhead is in; Rec New Splice (a switch): on = recording a new splice.
     if (params.rec && ! prevRec)
     {
-        if (recActive && recByNew && ! recStopping)
+        if (busy)
+            recordStopped.store (true);             // a big edit is being carried out: refused, the button goes back off
+        else if (recActive && recByNew && ! recStopping)
         {
             // Pressing Rec while a new splice is being recorded stops it, as on the module.
             stopRecording();
@@ -401,7 +660,9 @@ void Engine::process (float* const* channels, int numChannels, int numSamples)
 
     if (params.recNewSplice && ! prevRecNew)
     {
-        if (! recActive)
+        if (busy)
+            newSpliceStopped.store (true);
+        else if (! recActive)
         {
             recByNew = true;
             startRecording();
@@ -418,9 +679,16 @@ void Engine::process (float* const* channels, int numChannels, int numSamples)
 
     if (params.play && ! prevPlay)
     {
-        if (reel.length() > 0 && ! (recActive && recFirst))
-            player.start (reel);                    // turning Play on starts a fresh gene, at the Slide position
+        if (! busy && reel.length() > 0 && ! (recActive && recFirst))
+        {
+            if (params.playMode == 2)
+                player.switchSplice (reel);         // trigger loop: jumps back to the start (the old genes fade out quickly)
+            else
+                player.start (reel);                // turning Play on starts a fresh gene, at the Slide position
+        }
     }
+    else if (! params.play && prevPlay && params.playMode == 1 && ! busy)
+        player.release();                           // momentary: stops straight away (a fade of a millisecond or two)
     prevPlay = params.play;
 
     // ---- constants for this block ----
@@ -449,8 +717,11 @@ void Engine::process (float* const* channels, int numChannels, int numSamples)
         // The mix. What is heard is the live input plus the gene player's sound. What is recorded is the same mix,
         // except that the fade at the end of a whole-splice lap is never baked into the reel (see GenePlayer.h).
         const float liveL = inL * liveGain, liveR = inR * liveGain;
-        const float recordL = liveL + loop.recordL * loopGain;
-        const float recordR = liveR + loop.recordR * loopGain;
+        // Record Source "input only": what is written is the live input alone, whatever Sound On Sound says (Sound On Sound then only
+        // changes what you hear). Laying one pass over another is then impossible; recording over a splice replaces it.
+        const bool inputOnly = params.recordSource == 1;
+        const float recordL = inputOnly ? inL : liveL + loop.recordL * loopGain;
+        const float recordR = inputOnly ? inR : liveR + loop.recordR * loopGain;
         channels[0][i] = (liveL + loop.heardL * loopGain) * gainOut;
         if (chs > 1)
             channels[1][i] = (liveR + loop.heardR * loopGain) * gainOut;
@@ -465,14 +736,20 @@ void Engine::process (float* const* channels, int numChannels, int numSamples)
             else if (! writesFresh)
                 recGate = std::min (1.0f, recGate + gateStep);
 
+            // Over audio that is already there (Time Lag Accumulation) what is written goes through a gentle limiter, so that
+            // pass after pass can pile up without the reel running away.
+            float writeL = recordL, writeR = recordR;
             float oldL = 0.0f, oldR = 0.0f;
             if (! writesFresh)
             {
                 oldL = reel.get (0, recPos);
                 oldR = reel.get (1, recPos);
+                writeL = dsp::softLimit (writeL);
+                writeR = dsp::softLimit (writeR);
             }
-            const float newL = recGate >= 1.0f ? recordL : oldL + (recordL - oldL) * recGate;
-            const float newR = recGate >= 1.0f ? recordR : oldR + (recordR - oldR) * recGate;
+            const float newL = recGate >= 1.0f ? writeL : oldL + (writeL - oldL) * recGate;
+            const float newR = recGate >= 1.0f ? writeR : oldR + (writeR - oldR) * recGate;
+            saveChunkForUndo (recPos);              // the audio about to be overwritten is kept for Undo
             reel.set (0, recPos, newL);
             reel.set (1, recPos, newR);
             notePeak (recPos, newL, newR);
@@ -536,6 +813,9 @@ void Engine::process (float* const* channels, int numChannels, int numSamples)
     viewRecPos.store (recPos);
     viewRecording.store (recActive);
     viewPlaying.store (player.isPlaying() && reel.length() > 0);
+    viewBusy.store (busy);
+    viewRecKind.store (recActive ? (recFirst ? 1 : (recNew ? 3 : 2)) : 0);
+    viewUndoState.store (undo.hasStep() ? (undo.undone() ? 2 : 1) : 0);
 }
 
 void Engine::setPlayerTargets()
@@ -545,14 +825,17 @@ void Engine::setPlayerTargets()
     const int spliceLength = length > 0 ? map.length (selected, length) : 0;
 
     GenePlayer::Targets t;
-    t.rate = dsp::variSpeedRate (params.variSpeed, std::min (2, std::max (0, params.pitchSnap)));
+    t.rate = dsp::variSpeedRate (params.variSpeed, std::min (2, std::max (0, params.pitchSnap)),
+                                 std::min (2, std::max (0, params.variSpeedMode)));
     t.geneSeconds = geneSeconds (params.geneSize, (double) (spliceLength > 0 ? spliceLength : length) / sampleRate);
     t.slide = clamp01 (params.slide);
-    t.playWanted = params.play;
+    t.playWanted = params.playMode == 1 ? params.play : playOn();
     t.morph = dsp::morphFromKnob (params.morph);
     t.scaleMask = scales::maskFor (params.pitchScale);
     t.spliceStart = length > 0 ? map.start (selected) : 0;
     t.spliceLength = spliceLength;
+    t.smoothWindow = params.geneWindow == 1;
+    t.chordMode = std::min (dsp::kNumMorphChords - 1, std::max (0, params.morphChord));
     player.setTargets (t);
 }
 
@@ -580,6 +863,9 @@ Engine::ReelView Engine::getReelView() const
     v.recPos          = viewRecPos.load();
     v.recording       = viewRecording.load();
     v.playing         = viewPlaying.load();
+    v.recKind         = viewRecKind.load();
+    v.busy            = viewBusy.load();
+    v.undoState       = viewUndoState.load();
     return v;
 }
 

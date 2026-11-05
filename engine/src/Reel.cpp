@@ -122,6 +122,27 @@ void Reel::rebuildPeaks()
     }
 }
 
+void Reel::rebuildPeakBuckets (int fromBucket, int toBucket)
+{
+    if (cap <= 0)
+        return;
+
+    const int length = len.load (std::memory_order_relaxed);
+    const int end = std::min (toBucket, core::PeakOverview::kBuckets);
+    for (int b = std::max (0, fromBucket); b < end; ++b)
+    {
+        float l = 0.0f, r = 0.0f;
+        const int from = b * perBucket;
+        const int to = std::min (length, from + perBucket);
+        for (int i = from; i < to; ++i)
+        {
+            l = std::max (l, std::fabs (data[0].get()[i]));
+            r = std::max (r, std::fabs (data[1].get()[i]));
+        }
+        peaks.set (b, l, r);
+    }
+}
+
 void Reel::refreshPeaksFrom (int fromSample)
 {
     if (cap <= 0)

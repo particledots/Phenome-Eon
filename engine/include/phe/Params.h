@@ -8,8 +8,9 @@
 // engine when each control gets its sound. Milestone 4 gave meaning to Input Level, Sound On Sound and Output
 // Level, to the Input Gain Step menu, and to the Rec, Play and Clear Reel buttons. Milestone 5 adds Vari-Speed,
 // Gene-Size, Slide and the Pitch Snap menu. Milestone 6 adds Morph and the Pitch Scale menu. Milestone 7 adds Organize
-// and the Rec New Splice, Splice, Shift, Delete Splice Marker and Delete All Markers buttons. Erase Splice and Undo are
-// accepted and stored but do not change the sound yet (milestone 8).
+// and the Rec New Splice, Splice, Shift, Delete Splice Marker and Delete All Markers buttons. Milestone 8 adds Erase Splice
+// and Undo, and six menus for optional behaviours taken from the module's later firmware options (Vari-Speed Mode, Record
+// Source, Organize Timing, Gene Window, Play Mode, Morph Chord). The zero setting of every one of them is the normal behaviour.
 
 #pragma once
 
@@ -43,6 +44,15 @@ namespace phe
         int pitchSnap     = 0;     // 0 Off, 1 Steps, 2 Semitones (lands Vari-Speed on notes)
         int pitchScale    = 0;     // 0 Off, 1..28 = the scales in core/Scales.h (limits Morph's random pitch-up genes)
 
+        // Optional behaviours (milestone 8). 0 is always the normal behaviour.
+        int variSpeedMode = 0;     // 0 classic curve, 1 octave scale (bidirectional), 2 octave scale (forward only)
+        int recordSource  = 0;     // 0 record what you hear (Sound On Sound mix), 1 record the live input only
+        int organizeMode  = 0;     // 0 a newly chosen splice starts when the gene in progress ends, 1 straight away
+        int geneWindow    = 0;     // 0 short click-free fades, 1 smooth windows over the whole gene (short genes)
+        int playMode      = 0;     // 0 Play lets the gene finish, 1 momentary (stops at once), 2 trigger loop (always plays;
+                                   //   switching Play on jumps back to the start)
+        int morphChord    = 0;     // 0 random pitch-ups past 2:30, 1.. fixed chords (see core/Morph.h)
+
         // Buttons (on = true).
         //   rec:        on = recording, off = not recording (a switch).
         //   play:       on = the reel loops; turning it on starts a fresh gene from the Slide position; turning it
@@ -50,7 +60,9 @@ namespace phe
         //   clearReel:  acts the moment it goes on (the plugin switches it back off by itself).
         //   recNewSplice: a switch like rec: on = recording a new splice onto the end of the reel, off = stop.
         //   splice, shift, deleteMarker, deleteAllMarkers: act the moment they go on (the plugin switches them back off).
-        // Erase Splice and Undo are not used yet (milestone 8).
+        //   eraseSplice: acts the moment it goes on: the selected splice is removed from the reel (the audio after it moves up).
+        //   undo:        acts the moment it goes on: puts back what the last edit changed; pressed again it does the edit again.
+        //   Both are refused while recording, and the plugin switches them back off by itself.
         bool rec = false, recNewSplice = false, splice = false, shift = false, play = kDefaultPlay;
         bool deleteMarker = false, deleteAllMarkers = false, eraseSplice = false, clearReel = false, undo = false;
     };

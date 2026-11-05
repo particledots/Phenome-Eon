@@ -148,7 +148,7 @@ namespace
         std::set<juce::String> controlled (ids.begin(), ids.end());
         expect (ids.size() == controlled.size(), viewName + ": no parameter has two controls");
         expect (controlled == allIds, viewName + ": every parameter has a control");
-        expect (allIds.size() == 21, viewName + ": 21 parameters");
+        expect (allIds.size() == 27, viewName + ": 27 parameters");
 
         std::set<juce::String> moved;
         auto moveAndCheck = [&] (const juce::String& what, const std::function<void()>& action)
@@ -192,7 +192,7 @@ namespace
         }
         expect (toggles == 10, viewName + ": 10 on/off buttons (found " + juce::String (toggles) + ")");
 
-        expect (moved == allIds, viewName + ": moving the controls reached all 21 parameters");
+        expect (moved == allIds, viewName + ": moving the controls reached all 27 parameters");
 
         // And the other way: a parameter change shows up in the control (host automation -> window)
         if (auto* knob = sliders.empty() ? nullptr : sliders.front())
@@ -642,6 +642,106 @@ int main (int argc, char** argv)
         feedSilenceLoudest (proc, 2);
         letWindowThreadRun (200);
         expect (view().numSplices == 1, "wrapper (M7): Clear Reel takes the markers away");
+
+        // ---------------- milestone 8: Erase Splice, Undo / Redo, the option menus ----------------
+        setParameter (proc, PheParams::deleteAllMarkers, 1.0f);
+        feedSilenceLoudest (proc, 2);
+        letWindowThreadRun (200);
+        feedSilenceLoudest (proc, 400);
+        setParameter (proc, PheParams::splice, 1.0f);
+        feedSilenceLoudest (proc, 2);
+        letWindowThreadRun (200);
+        expect (view().numSplices == 2, "wrapper (M8): setup, two splices (" + juce::String (view().numSplices) + ")");
+        const int lengthBefore = view().lengthSamples;
+        expect (view().undoState == 1, "wrapper (M8): the Splice can be undone");
+
+        setParameter (proc, PheParams::undo, 1.0f);
+        feedSilenceLoudest (proc, 2);
+        letWindowThreadRun (200);
+        feedSilenceLoudest (proc, 20);
+        expect (view().numSplices == 1 && view().undoState == 2, "wrapper (M8): Undo takes the marker away and offers Redo");
+        expect (parameterValue (proc, PheParams::undo) < 0.5f, "wrapper (M8): the Undo button switches itself off");
+        {
+            PhenomeEonEditor editor (proc);
+            editor.showView (PhenomeEonEditor::View::styled);
+            editor.setSize (1200, 800);
+            letWindowThreadRun (150);
+            std::vector<juce::TextButton*> found;
+            collect (editor, found);
+            bool redoShown = false;
+            for (auto* b : found)
+                if (b->getButtonText() == "REDO")
+                    redoShown = true;
+            expect (redoShown, "wrapper (M8): the Undo button reads REDO after an Undo");
+        }
+        setParameter (proc, PheParams::undo, 1.0f);
+        feedSilenceLoudest (proc, 2);
+        letWindowThreadRun (200);
+        feedSilenceLoudest (proc, 20);
+        expect (view().numSplices == 2 && view().undoState == 1, "wrapper (M8): pressing it again is Redo");
+
+        setParameter (proc, PheParams::eraseSplice, 1.0f);
+        feedSilenceLoudest (proc, 2);
+        letWindowThreadRun (200);
+        for (int i = 0; i < 40 && view().busy; ++i)
+            feedSilenceLoudest (proc, 4);
+        expect (view().numSplices == 1 && view().lengthSamples < lengthBefore, "wrapper (M8): Erase Splice removes a splice (" + juce::String (view().lengthSamples) + " < " + juce::String (lengthBefore) + ")");
+        expect (parameterValue (proc, PheParams::eraseSplice) < 0.5f, "wrapper (M8): the Erase Splice button switches itself off");
+        setParameter (proc, PheParams::undo, 1.0f);
+        feedSilenceLoudest (proc, 2);
+        letWindowThreadRun (200);
+        for (int i = 0; i < 40 && view().busy; ++i)
+            feedSilenceLoudest (proc, 4);
+        expect (view().lengthSamples == lengthBefore && view().numSplices == 2, "wrapper (M8): Undo brings the erased splice back");
+
+        // The option menus reach the engine
+        setParameter (proc, PheParams::playMode, proc.getValueTreeState().getParameter (PheParams::playMode)->convertTo0to1 (2.0f));
+        setParameter (proc, PheParams::morphChord, proc.getValueTreeState().getParameter (PheParams::morphChord)->convertTo0to1 (1.0f));
+        setParameter (proc, PheParams::variSpeedMode, proc.getValueTreeState().getParameter (PheParams::variSpeedMode)->convertTo0to1 (1.0f));
+        feedSilenceLoudest (proc, 2);
+        expect (proc.getEngine().getParams().playMode == 2 && proc.getEngine().getParams().morphChord == 1
+                    && proc.getEngine().getParams().variSpeedMode == 1, "wrapper (M8): the option menus reach the engine");
+
+        // Older projects (without the new menus) open with the normal behaviour
+        {
+            juce::MemoryBlock block;
+            proc.getStateInformation (block);
+            auto xml = juce::AudioProcessor::getXmlFromBinary (block.getData(), (int) block.getSize());
+            if (xml != nullptr)
+            {
+                for (auto* id : { PheParams::variSpeedMode, PheParams::recordSource, PheParams::organizeMode,
+                                  PheParams::geneWindow, PheParams::playMode, PheParams::morphChord })
+                    for (int i = xml->getNumChildElements(); --i >= 0;)
+                        if (xml->getChildElement (i)->getStringAttribute ("id") == id)
+                            xml->removeChildElement (xml->getChildElement (i), true);
+                juce::MemoryBlock old;
+                juce::AudioProcessor::copyXmlToBinary (*xml, old);
+                PhenomeEonProcessor older;
+                older.setPlayConfigDetails (2, 2, 48000.0, 512);
+                older.prepareToPlay (48000.0, 512);
+                older.setStateInformation (old.getData(), (int) old.getSize());
+                expect (parameterValue (older, PheParams::playMode) == 0.0f && parameterValue (older, PheParams::variSpeedMode) == 0.0f
+                            && parameterValue (older, PheParams::morphChord) == 0.0f, "wrapper (M8): an older project opens with the normal behaviour");
+            }
+        }
+        {
+            PhenomeEonEditor editor (proc);
+            editor.showView (PhenomeEonEditor::View::styled);
+            editor.setSize (1200, 800);
+            letWindowThreadRun (150);
+            std::vector<StyledPanel*> panels;
+            collect (editor, panels);
+            expect (panels.size() == 1, "wrapper (M8): one styled panel");
+            if (! panels.empty())
+            {
+                panels[0]->showOptions (true);
+                letWindowThreadRun (150);
+                expect (panels[0]->optionsShowing(), "wrapper (M8): the Options sheet opens");
+                save (editor, outDir.getChildFile ("styled_options.png"), 1654.0f / 1200.0f);
+                panels[0]->showOptions (false);
+                expect (! panels[0]->optionsShowing(), "wrapper (M8): and closes");
+            }
+        }
         resetAll (proc);
     }
 
@@ -687,7 +787,7 @@ int main (int argc, char** argv)
         save (editor, outDir.getChildFile ("styled_smallest_window.png"), 1.0f);
 
         editor.showView (PhenomeEonEditor::View::plain);
-        editor.setSize (900, 600);
+        editor.setSize (1200, 800);
         save (editor, outDir.getChildFile ("plain_sliders.png"), 1.0f);
     }
 

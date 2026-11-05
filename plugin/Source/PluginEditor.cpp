@@ -12,10 +12,10 @@ namespace
         return juce::Font (juce::FontOptions (height, bold ? juce::Font::bold : juce::Font::plain));
     }
 
-    // Layout, in the fixed 900 x 600 space.
-    constexpr int kLeft = 24, kLabelWidth = 130, kSliderWidth = 330, kTextBoxWidth = 80;
+    // Layout, in the fixed 1200 x 800 space (the same 3:2 shape as the styled panel).
+    constexpr int kLeft = 24, kLabelWidth = 150, kSliderWidth = 440, kTextBoxWidth = 80;
     constexpr int kRowHeight = 40, kFirstRowY = 78;
-    constexpr int kButtonX = 616, kButtonWidth = 260, kButtonHeight = 34, kButtonGap = 8;
+    constexpr int kButtonX = 800, kButtonWidth = 370, kButtonHeight = 40, kButtonGap = 8;
 }
 
 PhenomeEonSliderPanel::PhenomeEonSliderPanel (juce::AudioProcessorValueTreeState& s)
@@ -35,6 +35,14 @@ PhenomeEonSliderPanel::PhenomeEonSliderPanel (juce::AudioProcessorValueTreeState
     addChoice (PheParams::inputGain,  "Input Gain Step");
     addChoice (PheParams::pitchSnap,  "Pitch Snap");
     addChoice (PheParams::pitchScale, "Pitch Scale");
+
+    // The six firmware-option menus (milestone 8). The first choice of each is the normal behaviour.
+    addChoice (PheParams::variSpeedMode, "Vari-Speed Mode");
+    addChoice (PheParams::recordSource,  "Record Source");
+    addChoice (PheParams::organizeMode,  "Organize Timing");
+    addChoice (PheParams::geneWindow,    "Gene Window");
+    addChoice (PheParams::playMode,      "Play Mode");
+    addChoice (PheParams::morphChord,    "Morph Chord");
 
     // The buttons.
     addButton (PheParams::rec,              "REC");
@@ -110,7 +118,7 @@ void PhenomeEonSliderPanel::paint (juce::Graphics& g)
 
     g.setColour (kMuted);
     g.setFont (font (13.0f));
-    g.drawText ("Plain slider window (the fallback). Erase Splice, Undo and the file buttons do not work yet.",
+    g.drawText ("Plain slider window (the fallback). The Load / Save WAV and Reel folder buttons come in a later milestone.",
                 kLeft, 46, kWidth - 2 * kLeft, 20, juce::Justification::centredLeft);
 
     g.setColour (kAmber);
@@ -129,11 +137,11 @@ void PhenomeEonSliderPanel::resized()
         y += kRowHeight;
     }
 
-    y += 14;
+    y += 10;
     for (auto& row : choices)
     {
         row->label.setBounds (kLeft, y, kLabelWidth, 30);
-        row->box.setBounds (kLeft + kLabelWidth, y, 260, 30);
+        row->box.setBounds (kLeft + kLabelWidth, y, 340, 30);
         y += kRowHeight;
     }
 

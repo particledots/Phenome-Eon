@@ -3,7 +3,7 @@
 // The short ids below are what Logic stores in saved projects and automation, so they must not be
 // renamed once people start using the plugin. New controls get new ids added at the end.
 //
-// In milestone 2 none of these change the sound yet; each gets its function in a later milestone.
+// All of them are in use by milestone 8.
 
 #pragma once
 
@@ -37,6 +37,14 @@ namespace PheParams
     inline constexpr const char* eraseSplice      = "eraseSplice";
     inline constexpr const char* clearReel        = "clearReel";
     inline constexpr const char* undo             = "undo";
+
+    // Firmware-option menus (milestone 8). Each starts at 0 = the normal behaviour, so nothing changes until one is chosen.
+    inline constexpr const char* variSpeedMode = "variSpeedMode";   // Classic / Octave scale (both ways) / Octave scale (forward only)
+    inline constexpr const char* recordSource  = "recordSource";    // Mix (as set by Sound On Sound) / Input only
+    inline constexpr const char* organizeMode  = "organizeMode";    // New splice at end of gene / immediately
+    inline constexpr const char* geneWindow    = "geneWindow";      // Short fades / Smooth windows
+    inline constexpr const char* playMode      = "playMode";        // Classic / Momentary / Trigger loop
+    inline constexpr const char* morphChord    = "morphChord";      // Random pitch-ups / four chord choices
 
     juce::AudioProcessorValueTreeState::ParameterLayout createLayout();
 }

@@ -47,6 +47,19 @@ namespace phe::dsp
         loopGain = std::min (1.0f, 2.0f * s);
     }
 
+    // A gentle safety limit for what is written back onto tape when recording over audio that is already there (Time Lag
+    // Accumulation). Below 0.8 (about -2 dB) the signal passes exactly as it is; above that it bends smoothly towards, but
+    // never reaches, 1.0. Pass after pass can then pile up without the reel ever running away or going past full scale.
+    inline float softLimit (float x)
+    {
+        constexpr float knee = 0.8f, room = 1.0f - knee;
+        const float a = std::fabs (x);
+        if (! (a > knee))
+            return x;
+        const float y = knee + room * std::tanh ((a - knee) / room);
+        return x < 0.0f ? -y : y;
+    }
+
     // A very short fade at each end of a stretch of 'length' samples, so a loop does not click where its end
     // meets its start. 'position' is where we are inside the stretch. Returns 0..1.
     inline float edgeFade (double position, int length, int fadeLength)

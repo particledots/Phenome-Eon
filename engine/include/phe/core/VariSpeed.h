@@ -11,6 +11,13 @@
 //
 // This is our own curve, drawn through the landmarks above; it can be retuned by ear without touching anything else.
 //
+// Two optional alternatives (the "Vari-Speed Mode" menu, from the module's later firmware options; our own curves):
+//   Octave scale, bidirectional   the same middle stop, but each half of the knob is spread evenly over octaves: from 1/128 speed
+//                                 (seven octaves below original) just off the stop to double speed at the end. Original speed is
+//                                 at knob 0.938 forward and 0.062 backward. Far more precise at slow speeds.
+//   Octave scale, forward only    the whole knob is one forward run: stopped at the far left, then the same octave scale,
+//                                 original speed at 0.8755, double speed at the far right. Never plays backwards.
+//
 // Pitch Snap (Off / Steps / Semitones) makes the knob land on musical notes instead of smooth speeds. Steps uses the
 // same list as the other particledots plugins (octaves and fifths: 0, 7, 12, 19, 24, ... mirrored below zero), so on
 // this knob the resting places are -24 -19 -12 -7 0 +7 +12. Snap works across the pitched range (+12 down to -26
@@ -29,6 +36,9 @@ namespace phe::dsp
     inline constexpr float kVariSpeedUnityZone     = 0.004f;   // knob distance from "original speed" that counts as exactly 1x
 
     enum PitchSnapMode { kSnapOff = 0, kSnapSteps = 1, kSnapSemitones = 2 };
+    enum VariSpeedMode { kVariClassic = 0, kVariOctaveBoth = 1, kVariOctaveForward = 2 };
+
+    inline constexpr float kVariOctaveDownSemitones = 84.0f;     // seven octaves below original, just off the stop (octave scales)
 
     // The resting places of Steps mode (the shared particledots list; mirrored below zero).
     inline constexpr float kSnapStepList[] = { 0.0f, 7.0f, 12.0f, 19.0f, 24.0f, 31.0f, 36.0f, 43.0f, 48.0f };
@@ -56,14 +66,54 @@ namespace phe::dsp
         bool  snapped = false;      // Pitch Snap moved the speed to a note
     };
 
+    // The octave-scale curves: 'd' is how far the knob is from its stop (0..1). Gives the speed, with Pitch Snap applied.
+    inline VariSpeedResult variSpeedOctaveScale (float d, float sign, int pitchSnap)
+    {
+        VariSpeedResult r;
+        if (d < kVariSpeedStopZone)
+        {
+            r.rate = 0.0f;
+            r.stopped = true;
+            r.semitones = -kVariOctaveDownSemitones;
+            return r;
+        }
+
+        const float u = (d - kVariSpeedStopZone) / (1.0f - kVariSpeedStopZone);           // 0 just off the stop .. 1 the end
+        float semitones = -kVariOctaveDownSemitones + (kVariOctaveDownSemitones + kVariSpeedUpSemitones) * u;
+        if (std::fabs (semitones) < 0.05f)
+            semitones = 0.0f;                                                              // exactly original speed
+
+        if (pitchSnap == kSnapSemitones)
+        {
+            semitones = std::round (semitones);
+            r.snapped = true;
+        }
+        else if (pitchSnap == kSnapSteps && semitones >= -48.0f)       // the Steps list stops at 48; below that snap lets go
+        {
+            semitones = snapSemitones (semitones, pitchSnap);
+            r.snapped = true;
+        }
+        r.semitones = semitones;
+        r.rate = sign * std::exp2 (semitones / 12.0f);
+        return r;
+    }
+
     // The speed the knob asks for, with Pitch Snap applied. 'pitchSnap': 0 Off, 1 Steps, 2 Semitones.
-    inline VariSpeedResult variSpeed (float knob, int pitchSnap)
+    // 'mode': 0 classic, 1 octave scale (bidirectional), 2 octave scale (forward only); see the top of this file.
+    inline VariSpeedResult variSpeed (float knob, int pitchSnap, int mode = kVariClassic)
     {
         VariSpeedResult r;
         const float x = std::min (1.0f, std::max (0.0f, std::isfinite (knob) ? knob : 0.5f));
+
+        if (mode == kVariOctaveForward)
+            return variSpeedOctaveScale (x, 1.0f, pitchSnap);
+
         const float offset = 2.0f * x - 1.0f;                // -1 .. +1, 0 in the middle
         const float d = std::fabs (offset);                  // 0 (stopped) .. 1 (the end of the travel)
         const float sign = offset >= 0.0f ? 1.0f : -1.0f;
+
+        if (mode == kVariOctaveBoth)
+            return variSpeedOctaveScale (d, sign, pitchSnap);
 
         if (d < kVariSpeedStopZone)
         {
@@ -110,5 +160,5 @@ namespace phe::dsp
         return r;
     }
 
-    inline float variSpeedRate (float knob, int pitchSnap) { return variSpeed (knob, pitchSnap).rate; }
+    inline float variSpeedRate (float knob, int pitchSnap, int mode = kVariClassic) { return variSpeed (knob, pitchSnap, mode).rate; }
 }
