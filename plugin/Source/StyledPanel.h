@@ -20,8 +20,9 @@
 //==============================================================================
 // The reel display: ruler, two waveform lanes, splice markers, current gene and playhead.
 // It shows the real reel (read-only, from the engine): the recorded length, a waveform picture of what is on the reel,
-// the playhead, the current gene (the amber box, milestone 5) and, while recording, the record head. Splice markers
-// are drawn by the same code but only appear in the preview tool's made-up demo until milestone 7 gives them real data.
+// the playhead, the current gene (the amber box, milestone 5), the splice markers with their numbers (milestone 7: the
+// selected splice is tinted amber, a splice that is still playing while another is waiting to take over is marked in
+// white) and, while recording, the record head (and, while a new splice is recorded, a marker where it begins).
 class ReelDisplay : public juce::Component
 {
 public:
@@ -50,6 +51,7 @@ private:
 
     const phe::Engine* engine = nullptr;
     phe::Engine::ReelView view;
+    std::vector<int> markerSamples;      // the splice markers (samples), copied from the engine
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ReelDisplay)
 };
@@ -173,6 +175,12 @@ private:
 
     double shownRate = -1.0;
     int shownChannels = -1;
+
+    // The Organize and Gene-Size read-outs depend on the splices (how many, how long), so they are redrawn when those change.
+    const phe::Engine* engineForReadouts = nullptr;
+    KnobCard* organizeCard = nullptr;
+    KnobCard* geneCard = nullptr;
+    long long shownSpliceStamp = -1;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (StyledPanel)
 };

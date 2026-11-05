@@ -1,10 +1,11 @@
-// The tape head and the gene player (milestone 5; Morph and Pitch Scale added in milestone 6).
+// The tape head and the gene player (milestone 5; Morph and Pitch Scale added in milestone 6; splices in milestone 7).
 //
-// Plain language: the reel is a strip of tape. The play head reads it at the speed Vari-Speed asks for (forwards,
-// backwards, faster, slower, stopped). What it plays at any moment is a "gene": a window cut out of the reel.
+// Plain language: the reel is a strip of tape, cut into splices by markers. The play head reads the selected splice at
+// the speed Vari-Speed asks for (forwards, backwards, faster, slower, stopped). What it plays at any moment is a "gene":
+// a window cut out of that splice. (With no markers the splice is the whole reel.)
 //
-//   Slide      says where the gene starts in the reel (0 = the start of the reel).
-//   Gene-Size  says how long the gene lasts. Fully left it is the whole reel (one lap). Turned up it gets shorter and
+//   Slide      says where the gene starts in the splice (0 = the start of the splice).
+//   Gene-Size  says how long the gene lasts. Fully left it is the whole splice (one lap). Turned up it gets shorter and
 //              shorter, down to a thousandth of a second. A gene's length is a length of TIME, so changing the speed
 //              does not change it; a faster tape just covers more of the reel inside the same time.
 //   A new gene starts every so often, always from the Slide position (so a short gene repeats like a grain loop;
@@ -13,6 +14,10 @@
 //   started a little later than the one before. Far round the Morph knob every new gene also gets a random pitch-up
 //   (limited to the notes of the Pitch Scale, if one is chosen) and a random place in the stereo picture.
 //   Each gene has a very short fade at both ends so the joins do not click.
+//
+// Each gene remembers the splice it was started in. When another splice is selected (Organize, Shift) the genes already
+// playing finish first, and the next gene to start is in the new splice. That is the "waits until the splice or gene
+// ends" behaviour of the module.
 //
 // While the tape is stopped (Vari-Speed in the middle) nothing plays. Moving Slide while stopped still scrubs.
 //
@@ -56,6 +61,8 @@ namespace phe
             bool playWanted = true;         // Play switch: when off the genes in progress are the last ones
             dsp::MorphSettings morph;       // how genes follow each other (from the Morph knob)
             int scaleMask = 0;              // Pitch Scale as a 12-note mask (0 = Off); see core/Scales.h
+            int spliceStart = 0;            // the splice the next gene starts in: where it begins in the reel (samples) ...
+            int spliceLength = 0;           // ... and how long it is (0 = the whole reel, the same as no markers)
         };
 
         // What came out of one step. 'heard' has the gene fades; 'record' is what goes back onto the reel when
@@ -66,7 +73,9 @@ namespace phe
         struct View
         {
             double windowStart = 0.0;       // samples, the left edge of the gene's window in the reel
-            double windowSpan = 0.0;        // samples the window covers (may run past the end and wrap round)
+            double windowSpan = 0.0;        // samples the window covers (may run past the end of its splice and wrap round inside it)
+            double spliceStart = 0.0;       // the splice the newest gene is in (samples) ...
+            double spliceLength = 0.0;      // ... and its length
             double geneSeconds = 0.0;       // 0 = whole reel
             float rate = 0.0f;
             int voices = 0;                 // how many genes are playing at this moment
@@ -76,10 +85,15 @@ namespace phe
 
         void setTargets (const Targets& t) { targets = t; }
 
-        // Starts a fresh gene from the Slide position, with the controls exactly as they are now (no gliding in).
-        void start();
+        // Starts a fresh gene from the Slide position (in the selected splice), with the controls exactly as they are
+        // now (no gliding in).
+        void start (const Reel& reel);
         void stop();
         bool isPlaying() const { return playing; }
+
+        // Moves straight to the selected splice (used when a new splice has just been recorded): the genes now playing
+        // fade out over a millisecond or two instead of cutting off, and a fresh gene starts in the selected splice.
+        void switchSplice (const Reel& reel);
 
         // One output sample from the reel, then moves the head on. Does nothing and returns silence when stopped.
         Out step (const Reel& reel);
@@ -95,15 +109,20 @@ namespace phe
         {
             bool active = false;
             double q = 0.0;          // how far this gene's head has moved since it began (reel samples, signed; includes its pitch)
-            double qBase = 0.0;      // the same at the tape's own speed (measures a whole-reel lap, whatever the pitch)
+            double qBase = 0.0;      // the same at the tape's own speed (measures a whole-splice lap, whatever the pitch)
+            double start = 0.0;      // the splice this gene was started in: first sample ...
+            double len = 1.0;        // ... and length in samples
             double age = 0.0;        // time since it began (samples); only runs while the tape moves
             float mult = 1.0f;       // this gene's own speed factor (the random pitch-up)
             float gainL = 1.0f, gainR = 1.0f;     // its place in the stereo picture and its share of the level
+            bool releasing = false;               // fading out (a new splice took over)
+            float releaseGain = 1.0f;
         };
         static constexpr int kNumVoices = dsp::kMaxGeneVoices + 2;    // two spare, for the moment when genes change over
 
         double wrap (double position, double length) const;
-        void spawnVoice (double overshoot, bool whole);
+        void spawnVoice (double overshoot, bool whole, const Reel& reel);
+        void targetSplice (const Reel& reel, double& start, double& len) const;
         int activeVoices() const;
 
         double sampleRate = 48000.0;

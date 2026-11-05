@@ -7,8 +7,9 @@
 // Knobs run 0.0 to 1.0. What each position means (decibels, seconds, semitones, percent) is decided inside the
 // engine when each control gets its sound. Milestone 4 gave meaning to Input Level, Sound On Sound and Output
 // Level, to the Input Gain Step menu, and to the Rec, Play and Clear Reel buttons. Milestone 5 adds Vari-Speed,
-// Gene-Size, Slide and the Pitch Snap menu. Milestone 6 adds Morph and the Pitch Scale menu. The other controls are
-// accepted and stored but do not change the sound yet (milestones 7 and 8).
+// Gene-Size, Slide and the Pitch Snap menu. Milestone 6 adds Morph and the Pitch Scale menu. Milestone 7 adds Organize
+// and the Rec New Splice, Splice, Shift, Delete Splice Marker and Delete All Markers buttons. Erase Splice and Undo are
+// accepted and stored but do not change the sound yet (milestone 8).
 
 #pragma once
 
@@ -23,6 +24,7 @@ namespace phe
     inline constexpr float kDefaultSlide        = 0.0f;    // fully left: genes start at the start of the reel
     inline constexpr float kDefaultVariSpeed    = 0.75f;   // original speed, forwards (the "2:30" position)
     inline constexpr float kDefaultMorph        = 0.18f;   // exactly 1/1: genes follow each other with no gap or overlap
+    inline constexpr float kDefaultOrganize     = 0.0f;    // fully left: the first splice
 
     struct Params
     {
@@ -33,7 +35,7 @@ namespace phe
         float slide        = kDefaultSlide;
         float variSpeed    = kDefaultVariSpeed;
         float morph        = kDefaultMorph;
-        float organize     = 0.5f;
+        float organize     = kDefaultOrganize;
         float outputLevel  = kDefaultOutputLevel;
 
         // Menus
@@ -46,7 +48,9 @@ namespace phe
         //   play:       on = the reel loops; turning it on starts a fresh gene from the Slide position; turning it
         //               off lets the gene in progress finish and then stops.
         //   clearReel:  acts the moment it goes on (the plugin switches it back off by itself).
-        // The others are not used yet (milestones 7 and 8).
+        //   recNewSplice: a switch like rec: on = recording a new splice onto the end of the reel, off = stop.
+        //   splice, shift, deleteMarker, deleteAllMarkers: act the moment they go on (the plugin switches them back off).
+        // Erase Splice and Undo are not used yet (milestone 8).
         bool rec = false, recNewSplice = false, splice = false, shift = false, play = kDefaultPlay;
         bool deleteMarker = false, deleteAllMarkers = false, eraseSplice = false, clearReel = false, undo = false;
     };

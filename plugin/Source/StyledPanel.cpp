@@ -1,6 +1,7 @@
 #include "StyledPanel.h"
 #include <phe/core/Gain.h>
 #include <phe/core/Morph.h>
+#include <phe/core/SpliceMap.h>
 #include <phe/core/VariSpeed.h>
 #include <phe/GenePlayer.h>
 #include <cmath>
@@ -58,17 +59,38 @@ namespace
         return juce::String (seconds * 1000.0, 1) + " ms";
     }
 
-    // Gene-Size read-out: the length of a gene (it depends on how long the reel is, so the engine is asked).
+    // Status line: "2 / 5" (the splice playing, out of how many); "2 / 5 > 3" when splice 3 has been chosen and is waiting
+    // for the gene in progress to end.
+    juce::String spliceText (const phe::Engine::ReelView& v)
+    {
+        juce::String text = juce::String (v.playingSplice + 1) + " / " + juce::String (v.numSplices);
+        if (v.selectedSplice != v.playingSplice)
+            text += " > " + juce::String (v.selectedSplice + 1);
+        return text;
+    }
+
+    // Gene-Size read-out: the length of a gene. It depends on how long the selected splice is (the whole reel when there
+    // are no markers), so the engine is asked.
     juce::String geneSizeText (double value, const phe::Engine& engine)
     {
         const auto view = engine.getReelView();
-        const double reelSeconds = view.sampleRate > 0.0 ? (double) view.lengthSamples / view.sampleRate : 0.0;
+        const double spliceSeconds = view.sampleRate > 0.0 ? (double) view.spliceLengthSamples / view.sampleRate : 0.0;
+        const juce::String whole = view.numSplices > 1 ? "whole splice" : "whole reel";
         if (value <= (double) phe::kGeneFullZone)
-            return "whole reel";
-        if (reelSeconds <= 0.0)
+            return whole;
+        if (spliceSeconds <= 0.0)
             return "no reel yet";
-        const double g = phe::geneSeconds ((float) value, reelSeconds);
-        return g <= 0.0 ? "whole reel" : geneLengthText (g);
+        const double g = phe::geneSeconds ((float) value, spliceSeconds);
+        return g <= 0.0 ? whole : geneLengthText (g);
+    }
+
+    // Organize read-out: the splice the knob points at ("splice 2 of 5"), or "1 splice" while there are no markers.
+    juce::String organizeText (double value, const phe::Engine& engine)
+    {
+        const int n = engine.getReelView().numSplices;
+        if (n <= 1)
+            return "1 splice";
+        return "splice " + juce::String (phe::core::organizeZone ((float) value, n) + 1) + " of " + juce::String (n);
     }
 
     // Vari-Speed read-out: the speed (with Pitch Snap off), or the note it lands on (with Pitch Snap on).
@@ -135,13 +157,23 @@ void ReelDisplay::refresh()
         return;
 
     const auto now = engine->getReelView();
-    if (now.lengthSamples != view.lengthSamples || now.capacitySamples != view.capacitySamples
+    int buffer[phe::core::kMaxSpliceMarkers];
+    const int count = engine->getSpliceMap().snapshot (buffer, phe::core::kMaxSpliceMarkers);
+    const bool markersChanged = count != (int) markerSamples.size()
+                                || ! std::equal (buffer, buffer + count, markerSamples.begin());
+
+    if (markersChanged
+        || now.lengthSamples != view.lengthSamples || now.capacitySamples != view.capacitySamples
         || ! juce::exactlyEqual (now.sampleRate, view.sampleRate) || now.playPos != view.playPos || now.recPos != view.recPos
         || now.recording != view.recording || now.playing != view.playing
         || now.geneStart != view.geneStart || now.geneSpan != view.geneSpan
+        || now.geneSpliceStart != view.geneSpliceStart || now.geneSpliceLength != view.geneSpliceLength
+        || now.numSplices != view.numSplices || now.selectedSplice != view.selectedSplice
+        || now.playingSplice != view.playingSplice || now.newSpliceBase != view.newSpliceBase
         || ! juce::exactlyEqual (now.geneSeconds, view.geneSeconds) || ! juce::exactlyEqual (now.rate, view.rate))
     {
         view = now;
+        markerSamples.assign (buffer, buffer + count);
         repaint();
     }
 }
@@ -155,13 +187,22 @@ void ReelDisplay::paint (juce::Graphics& g)
     auto xFor = [w] (double seconds) { return (float) (seconds / kReelSeconds) * w; };
 
     // What is shown: the real reel (read from the engine). The made-up demo is for the preview tool only.
-    // Until splice markers exist (milestone 7) the whole reel is one splice.
     const double rate = view.sampleRate > 0.0 ? view.sampleRate : sampleRate;
     const bool haveReel = ! demo && engine != nullptr && view.lengthSamples > 0 && rate > 0.0;
     const bool recording = ! demo && engine != nullptr && view.recording && rate > 0.0;
     const double reelLength = demo ? 100.0 : (haveReel ? (double) view.lengthSamples / rate : 0.0);
-    const std::vector<double> markers = demo ? std::vector<double> { 22.7, 45.4, 61.9, 78.6 } : std::vector<double>{};
-    const int currentSplice = demo ? 2 : (haveReel ? 0 : -1);          // 0-based
+    std::vector<double> markers;
+    if (demo)
+        markers = { 22.7, 45.4, 61.9, 78.6 };
+    else if (haveReel)
+    {
+        for (int m : markerSamples)
+            markers.push_back ((double) m / rate);
+        if (view.newSpliceBase > 0)                                    // a new splice is being recorded: it starts here
+            markers.push_back ((double) view.newSpliceBase / rate);
+    }
+    const int currentSplice = demo ? 2 : (haveReel ? juce::jlimit (0, (int) markers.size(), view.selectedSplice) : -1);   // 0-based
+    const int playingSplice = demo ? 2 : (haveReel ? juce::jlimit (0, (int) markers.size(), view.playingSplice) : -1);
     const double playhead = demo ? 52.1 : (haveReel ? (double) view.playPos / rate : 0.0);
     const double recordHead = recording ? (double) view.recPos / rate : 0.0;
     const bool showPlayhead = demo || (haveReel && (view.playing || ! recording));
@@ -184,7 +225,7 @@ void ReelDisplay::paint (juce::Graphics& g)
         struct Item { juce::String label, value; juce::Colour valueColour; };
         const std::vector<Item> items {
             { "REEL",     minutesSeconds (reelLength) + " / " + minutesSeconds (kReelSeconds), text },
-            { "SPLICE",   demo ? "3 / 5" : (haveReel ? "1 / 1" : "-"),    amber },
+            { "SPLICE",   demo ? "3 / 5" : (haveReel ? spliceText (view) : juce::String ("-")),    amber },
             { "GENE",     demo ? "4.5 s" : (haveReel ? (view.geneSeconds > 0.0f ? geneLengthText ((double) view.geneSeconds) : juce::String ("whole")) : juce::String ("-")), amber },
             { "GENES",    demo ? "3" : (view.playing ? juce::String (view.voices) : juce::String ("-")), amber },
             { "PLAYHEAD", minutesSeconds (playhead) + "." + juce::String ((int) std::floor ((playhead - std::floor (playhead)) * 10.0)), text },
@@ -333,28 +374,34 @@ void ReelDisplay::paint (juce::Graphics& g)
         g.fillPath (right);
     }
 
-    // The current gene (a box over the waveform): the stretch of reel the tape head is cutting out. Not drawn when the
-    // gene is the whole reel. It may run past the end of the reel and carry on from the start.
-    if (haveReel && view.geneSpan > 0 && (double) view.geneSpan < 0.98 * (double) view.lengthSamples)
+    // The current gene (a box over the waveform): the stretch of its splice the tape head is cutting out. Not drawn when
+    // the gene is the whole splice. It may run past the end of the splice and carry on from the start of that splice.
     {
-        const double start = (double) view.geneStart / rate;
-        const double span = (double) view.geneSpan / rate;
-        auto drawBox = [&] (double from, double to)
+        const bool haveSplice = view.geneSpliceLength > 0;
+        const double spliceFrom = haveSplice ? (double) view.geneSpliceStart / rate : 0.0;
+        const double spliceSpan = haveSplice ? (double) view.geneSpliceLength / rate : reelLength;
+        const double spliceTo = spliceFrom + spliceSpan;
+        if (haveReel && view.geneSpan > 0 && (double) view.geneSpan < 0.98 * spliceSpan * rate)
         {
-            const float x0 = xFor (from);
-            const float x1 = juce::jmax (x0 + 3.0f, xFor (to));
-            const juce::Rectangle<float> gene (x0, waveTop + 5.0f, x1 - x0, h - waveTop - numbersH + 8.0f);
-            g.setColour (amber.withAlpha (0.22f));
-            g.fillRect (gene);
-            g.setColour (amber);
-            g.drawRect (gene, 1.5f);
-        };
-        if (start + span <= reelLength)
-            drawBox (start, start + span);
-        else
-        {
-            drawBox (start, reelLength);
-            drawBox (0.0, start + span - reelLength);
+            const double start = (double) view.geneStart / rate;
+            const double span = (double) view.geneSpan / rate;
+            auto drawBox = [&] (double from, double to)
+            {
+                const float x0 = xFor (from);
+                const float x1 = juce::jmax (x0 + 3.0f, xFor (to));
+                const juce::Rectangle<float> gene (x0, waveTop + 5.0f, x1 - x0, h - waveTop - numbersH + 8.0f);
+                g.setColour (amber.withAlpha (0.22f));
+                g.fillRect (gene);
+                g.setColour (amber);
+                g.drawRect (gene, 1.5f);
+            };
+            if (start + span <= spliceTo)
+                drawBox (start, start + span);
+            else
+            {
+                drawBox (start, spliceTo);
+                drawBox (spliceFrom, start + span - spliceSpan);
+            }
         }
     }
 
@@ -391,7 +438,7 @@ void ReelDisplay::paint (juce::Graphics& g)
             for (int i = 0; i <= (int) markers.size(); ++i)
             {
                 const float x0 = xFor (spliceStart (i)), x1 = xFor (spliceEnd (i));
-                g.setColour (i == currentSplice ? amber : muted);
+                g.setColour (i == currentSplice ? amber : (i == playingSplice ? text : muted));
                 g.drawText (juce::String (i + 1), juce::Rectangle<float> (x0, h - numbersH + 2.0f, x1 - x0, numbersH - 4.0f),
                             juce::Justification::centred, false);
             }
@@ -574,14 +621,20 @@ StyledPanel::StyledPanel (juce::AudioProcessorValueTreeState& s, juce::AudioProc
                                return variSpeedText (v, snap);
                            });
     auto& morph = addKnob (PheParams::morph,     "MORPH",      KnobCard::Size::large, morphText);
-    addKnob (PheParams::organize,    "ORGANIZE",     KnobCard::Size::small);
+    auto& organize = addKnob (PheParams::organize, "ORGANIZE", KnobCard::Size::small,
+                              [&engine] (double v) { return organizeText (v, engine); });
     auto& output = addKnob (PheParams::outputLevel, "OUTPUT LEVEL", KnobCard::Size::small, levelText);
 
     // Short captions for the knobs that make sound
-    gene.addNote ("left: whole reel\nright: shorter gene\n(length in time)", { 7, 194, 130, 62 }, juce::Justification::topLeft);
-    slide.addNote ("where the gene\nstarts in the reel\n(left = the start)", { 7, 194, 130, 62 }, juce::Justification::topLeft);
+    gene.addNote ("left: whole splice\nright: shorter gene\n(length in time)", { 7, 194, 130, 62 }, juce::Justification::topLeft);
+    slide.addNote ("where the gene\nstarts in the splice\n(left = the start)", { 7, 194, 130, 62 }, juce::Justification::topLeft);
+    organize.addNote ("one zone per splice\nShift: next splice\nswitches when the\ngene ends", { 7, 194, 130, 78 }, juce::Justification::topLeft);
     sos.addNote ("live % / loop %\nleft: live only\nright: loop only", { 7, 194, 130, 62 }, juce::Justification::topLeft);
     output.addNote ("0.0 dB = no change", { 7, 194, 130, 22 }, juce::Justification::topLeft);
+
+    engineForReadouts = &engine;
+    organizeCard = &organize;
+    geneCard = &gene;
 
     // Under Input Level: the 4-step gain selector
     gainSelector = std::make_unique<GainStepSelector> (state, PheParams::inputGain);
@@ -686,6 +739,19 @@ void StyledPanel::timerCallback()
     }
 
     reel.refresh();
+
+    // Organize and Gene-Size say things about the splices: redraw them when the splices change.
+    if (engineForReadouts != nullptr)
+    {
+        const auto v = engineForReadouts->getReelView();
+        const long long stamp = (long long) v.numSplices * 1000003LL + (long long) v.spliceLengthSamples * 31LL + v.selectedSplice;
+        if (stamp != shownSpliceStamp)
+        {
+            shownSpliceStamp = stamp;
+            if (organizeCard != nullptr) organizeCard->repaint();
+            if (geneCard != nullptr) geneCard->repaint();
+        }
+    }
 }
 
 void StyledPanel::paint (juce::Graphics& g)
@@ -739,7 +805,7 @@ void StyledPanel::paint (juce::Graphics& g)
 
     // Footer
     g.setFont (mono (14.0f));
-    g.drawText ("PhenomeEon v" + versionText + "  -  Organize, splices and the file buttons do not work yet",
+    g.drawText ("PhenomeEon v" + versionText + "  -  Erase Splice, Undo and the file buttons do not work yet",
                 juce::Rectangle<int> (kMargin, 757, 900, 28), juce::Justification::centredLeft, false);
 }
 

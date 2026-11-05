@@ -53,6 +53,10 @@ namespace phe
         // Rebuild the whole waveform picture from the audio (used after a sample-rate conversion).
         void rebuildPeaks();
 
+        // Brings the picture back in line after audio from 'fromSample' on was thrown away: redraws the slice that
+        // contains it (from the audio that is still there) and blanks the slices after it. Cheap enough for the audio thread.
+        void refreshPeaksFrom (int fromSample);
+
     private:
         struct FreeDeleter { void operator() (float* p) const { std::free (p); } };
         using Buffer = std::unique_ptr<float, FreeDeleter>;

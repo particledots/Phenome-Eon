@@ -122,4 +122,28 @@ void Reel::rebuildPeaks()
     }
 }
 
+void Reel::refreshPeaksFrom (int fromSample)
+{
+    if (cap <= 0)
+        return;
+
+    const int length = len.load (std::memory_order_relaxed);
+    const int first = std::max (0, fromSample) / perBucket;
+    for (int b = first; b < core::PeakOverview::kBuckets; ++b)
+    {
+        float l = 0.0f, r = 0.0f;
+        if (b == first)
+        {
+            const int from = b * perBucket;
+            const int to = std::min (length, from + perBucket);
+            for (int i = from; i < to; ++i)
+            {
+                l = std::max (l, std::fabs (data[0].get()[i]));
+                r = std::max (r, std::fabs (data[1].get()[i]));
+            }
+        }
+        peaks.set (b, l, r);
+    }
+}
+
 } // namespace phe

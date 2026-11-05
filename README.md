@@ -4,64 +4,74 @@ An original AU / VST3 effect for Logic Pro, inspired by the feel of a Eurorack g
 Make Noise Morphagene). All DSP is our own code; it is not a port or copy of anything, and it is not affiliated
 with Make Noise.
 
-Status: **milestone 6 (Morph and Pitch Scale): built and checked automatically; not yet tested in Logic.**
-Milestones 1 to 5 (mockup, empty build, styled panel, reel / Rec / Sound On Sound / playback, tape head and genes) were
-tested in Logic on both Macs and work.
+Status: **milestone 7 (splices): built and checked automatically; not yet tested in Logic.**
+Milestones 1 to 6 (mockup, empty build, styled panel, reel / Rec / Sound On Sound / playback, tape head and genes, Morph and
+Pitch Scale) were tested in Logic on both Macs and work.
 
-Version 0.6.0 (milestone 6, **not yet tested in Logic**): Morph and Pitch Scale now make sound. Same styled panel and the
-same 21 control ids as 0.5.0. Mono or stereo in, the same out. Everything from 0.5.0 works as before.
+Version 0.7.0 (milestone 7, **not yet tested in Logic**): splices. Same styled panel and the same 21 control ids as 0.6.0.
+Mono or stereo in, the same out. Everything from 0.6.0 works as before when there are no markers (one splice = the whole reel).
 
-- **Starting position changed.** A new PhenomeEon opens with Morph at 1/1 (about 8:30 to 9:00 on the knob, 0.18), so it
-  still plays a plain 1:1 loop. A project saved with 0.5.0 stored Morph at 0.5 (12:00, two genes at once): reset the Morph
-  knob, or add a fresh PhenomeEon.
-- **MORPH** (the big knob under the gene controls): how genes follow each other. A new gene starts every so often; Morph
-  sets how often, as a share of a gene's length.
-  - **Far left:** a gap of silence before each next gene (up to half a gene long); the read-out says "gap 30%".
-  - **About 8:30 to 9:00 (0.18): 1/1.** Genes follow each other with no gap and no overlap (a seamless loop). This is a small
-    flat zone, so it is easy to find; the read-out says "1/1".
-  - **Up to 12:00: overlap.** The next gene starts before the last one has ended, so copies of the same gene play together,
-    each a little later than the one before. At 12:00 two play at a time ("2/1").
-  - **Up to 1:00:** three at a time, equally spaced ("3/1"). Panning starts to fade in: the genes are spread across the
-    stereo picture (left, right, centre in turn); it is fully in by 2:30.
-  - **Past 2:30:** a fourth gene joins (spacing tightens to a quarter of a gene), and every new gene gets a **random pitch-up**
-    (from none up to two octaves at the end of the knob) and a **random place** in the stereo picture, both growing as the
-    knob goes round. The read-out shows the highest pitch-up (for example "3.6/1 +12st").
-  - Several genes together are turned down so the level stays steady (equal power: each is divided by the square root of
-    how many play at once). Genes keep their 1.5 ms fades. It works the same at any Gene-Size, up to the whole reel.
-  - Our own curves, drawn through the manual's landmarks; to be tuned by ear (all in `engine/include/phe/core/Morph.h`).
-- **PITCH SCALE** (menu under Morph: Off + 28 scales): decides which random pitch-ups are possible. **Off:** any amount up to
-  the range. **A scale:** only notes of that scale, counted up from the note Vari-Speed is playing now (so the root is
-  always the current Vari-Speed note), over as many octaves as the range reaches; the root itself is always possible. It
-  changes nothing below 2:30 on Morph, where there are no pitch-ups. Pitch Snap (on Vari-Speed) and Pitch Scale (on Morph)
-  work together.
-- **The reel display** has a GENES count in the status line (how many genes play at this moment).
-- **PLAY off** lets every gene in progress finish, then stops. A stopped tape is silent at any Morph setting.
-- **Recording** still writes what you hear (the Sound On Sound mix, including overlapped and pitched genes) at constant speed.
-- The random pitch-ups and places repeat the same way each time PLAY starts (the same random sequence each time).
-- **Not working yet (stored and automatable, but no sound change):** Organize, REC NEW SPLICE, SPLICE, SHIFT and the four
-  delete / undo buttons; Load WAV, Save WAV, Reel folder.
-- **When the buttons act:** Rec, Play and Clear Reel act while Logic is processing audio (playing). Logic does not run
-  effects while stopped, so press Play in Logic, then use the buttons.
-- A project saved while Rec or Clear Reel was on opens with them off, so nothing starts recording or clears by itself.
+- **What a splice is.** A splice marker is a cut mark on the reel. With no markers the reel is one splice; each marker adds
+  one more, up to 299 markers (300 splices). The reel display draws the markers (dashed white lines) with a number for each
+  splice under the waveform. The selected splice is tinted amber.
+- **Everything plays inside the selected splice.** Slide, Gene-Size, Vari-Speed, Morph and Pitch Scale now work on the
+  selected splice instead of on the whole reel: Slide 0 is the start of the splice, "whole splice" is one lap of it (the
+  Gene-Size read-out says "whole splice" when there are several), and a gene that runs past the end of the splice carries on
+  from its start.
+- **SPLICE** (button): drops a marker where the tape head is now. The splice it cuts keeps its number and becomes the part
+  *before* the marker, so the loop you were hearing becomes the stretch up to the point where you pressed. A splice cannot be
+  shorter than 64 samples (a press that would make one is ignored).
+- **SHIFT** (button): selects the next splice (after the last, back to the first).
+- **ORGANIZE** (knob): selects splices by position. The knob is cut into equal zones, one per splice, however long each splice
+  is (the read-out says "splice 3 of 5"). **Organize wins over Shift:** Shift moves on from wherever Organize last put you, and
+  as soon as the Organize knob moves into a different zone it takes over again. Adding or removing markers does not by
+  itself change the selection.
+- **A newly selected splice does not start at once.** As on the module, the gene in progress plays to its end first, and the
+  next gene starts in the new splice. The status line shows "2 / 5 > 3" while splice 3 is waiting to take over from splice 2.
+- **DELETE SPLICE MARKER** (button): takes away the marker at the end of the selected splice, joining it with the next one.
+  On the last splice there is no marker after it, so nothing happens.
+- **DELETE ALL MARKERS** (button): the whole reel becomes one splice again. (The audio is not touched.)
+- **REC NEW SPLICE** (a switch, like REC): on = record a new splice onto the end of the reel; off = stop. What you hear is
+  what is recorded (the Sound On Sound mix, which can include the other splices as they play), so Sound On Sound decides
+  whether the new splice holds live sound, other splices, or both. The reel grows as it records; the old splices keep
+  playing. When you stop, a marker is placed at the old end of the reel, the new splice is selected, and it starts looping
+  straight away (the old genes fade out over about a millisecond). Pressing REC while a new splice is recording stops it.
+  The take stops by itself when the reel is full (2.9 minutes). A take shorter than 64 samples is thrown away. On an empty
+  reel, REC NEW SPLICE records the first take, as REC does.
+- **REC** (over existing audio) now stays inside the splice the playhead is in: it records from the playhead round and round
+  that splice until switched off (Time Lag Accumulation), and never touches the other splices.
+- **CLEAR REEL** also takes all the markers away.
+- **Starting position changed.** Organize now starts fully left (the first splice). A project saved with 0.6.0 stored 0.5
+  and keeps it; with no markers it makes no difference.
+- **Splice, Shift, Delete Splice Marker and Delete All Markers** act the moment they go on, then the plugin switches them
+  back off by itself (like Clear Reel). A project saved with any of them on, or with Rec New Splice on, opens with them off.
+- **Not working yet (stored and automatable, but no sound change):** ERASE SPLICE and UNDO; Load WAV, Save WAV, Reel folder.
+  Splice markers are not saved with the project yet (they will be saved with the reel file in milestone 9), and the reel
+  itself is not saved with the project, as before.
+- **When the buttons act:** the buttons act while Logic is processing audio (playing). Logic does not run effects while
+  stopped, so press Play in Logic, then use the buttons. Marker positions are set at the start of an audio block (a few
+  milliseconds).
 
-What has been checked automatically (before any test in Logic): the engine self-test (334 checks: everything from 0.5.0,
-plus the Morph landmarks and curve shape, gaps and exact start spacing, how many genes play at once at each setting, whole-
-reel genes, backwards and double-speed playback with overlaps, steady level, panning, random pitch-up amounts and the
-scales they stay in, Pitch Scale having no effect below 2:30, the Vari-Speed note being the root, results not depending on
-block size, Play off with overlapping genes, a stopped tape, recording while genes overlap, random control changes staying
-finite), also run under a memory-error checker with no errors; the preview tool (draws the windows to pictures, moves every
-control, drives the real plugin code with audio); and the GitHub build. Not yet tested: anything in Logic (M4 Mac mini, macOS
+What has been checked automatically (before any test in Logic): the engine self-test (477 checks: everything from 0.6.0,
+plus the marker list and its limits, the Organize zones, Shift and the Organize-over-Shift rule, the selection staying put
+when markers are added or removed, a marker landing exactly where the head is, a new splice waiting for the gene in progress
+to end, playback staying inside its splice, deleting markers, recording over a splice not touching the others, recording a
+new splice (what is written, the marker, selection, looping straight away, stopping by itself when full, being refused or
+thrown away when it should be, Rec stopping it), Clear Reel and a sample-rate change keeping the markers right, results not
+depending on block size, and long random sequences of every button keeping the sound finite and the markers valid), also
+run under a memory-error checker with no errors; the preview tool (draws the windows to pictures, moves every control, drives
+the real plugin code with audio; 174 checks); and the GitHub build. Not yet tested: anything in Logic (M4 Mac mini, macOS
 Tahoe, Logic 11.2.2; Intel Mac, macOS 12.7.8, Logic 10.7.8).
 
-Earlier versions: 0.5.0 tape head, genes, Vari-Speed, Pitch Snap (tested, works); 0.4.0 reel, Rec, Sound On Sound, basic
-playback (tested, works); 0.3.1 styled panel on the empty build (tested, works); 0.2.0 empty build with plain sliders
-(tested, works).
+Earlier versions: 0.6.0 Morph and Pitch Scale (tested, works); 0.5.0 tape head, genes, Vari-Speed, Pitch Snap (tested, works);
+0.4.0 reel, Rec, Sound On Sound, basic playback (tested, works); 0.3.1 styled panel on the empty build (tested, works); 0.2.0
+empty build with plain sliders (tested, works).
 
 ## Folders
 
 | Folder | What it is |
 |---|---|
-| `engine/` | The audio engine. Plain C++, no plugin code. This is the part reused for later plugins. `engine/include/phe/core/` holds the generic parts (scales, level helpers, the tape-speed curve and Pitch Snap, the waveform picture); `Reel.h`, `GenePlayer.h` and `Engine.h` are the reel, the tape head with its genes, and the engine. `core/Morph.h` is the Morph curve and the random pitch-up / Pitch Scale choice. |
+| `engine/` | The audio engine. Plain C++, no plugin code. This is the part reused for later plugins. `engine/include/phe/core/` holds the generic parts (scales, level helpers, the tape-speed curve and Pitch Snap, the waveform picture); `Reel.h`, `GenePlayer.h` and `Engine.h` are the reel, the tape head with its genes, and the engine. `core/Morph.h` is the Morph curve and the random pitch-up / Pitch Scale choice; `core/SpliceMap.h` is the list of splice markers and the Organize / Shift selection rules (reusable). |
 | `plugin/` | The plugin wrapper: what Logic sees, the list of controls, and the windows (styled panel and plain sliders). `plugin/Fonts/` holds the panel fonts and their licences; `plugin/preview/` is an optional tool that draws the panel to pictures and checks the controls (not part of the plugin). |
 | `tools/install/` | The generic installer used by all the "Unofficial" plugins. |
 | `.github/workflows/` | The automatic build. |

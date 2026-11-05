@@ -50,7 +50,7 @@ void GenePlayer::stop()
     newest = 0;
 }
 
-void GenePlayer::start()
+void GenePlayer::start (const Reel& reel)
 {
     for (auto& v : voices)
         v = Voice();
@@ -61,7 +61,21 @@ void GenePlayer::start()
     slideNow = (double) targets.slide;
     gate = smoothRange (std::fabs (rateNow), kMovingFrom, kMovingTo);
     playing = true;
-    spawnVoice (0.0, targets.geneSeconds <= 0.0);        // the first gene starts right away, from the Slide position
+    spawnVoice (0.0, targets.geneSeconds <= 0.0, reel);  // the first gene starts right away, from the Slide position
+}
+
+void GenePlayer::switchSplice (const Reel& reel)
+{
+    if (! playing)
+    {
+        start (reel);
+        return;
+    }
+    for (auto& v : voices)
+        if (v.active)
+            v.releasing = true;
+    clock = 0.0;
+    spawnVoice (0.0, targets.geneSeconds <= 0.0, reel);
 }
 
 int GenePlayer::activeVoices() const
@@ -75,7 +89,25 @@ int GenePlayer::activeVoices() const
 
 // Starts one more gene. 'overshoot' is how far past the exact moment we already are (so the gene clock stays steady):
 // time for short genes, signed reel distance for whole-reel genes.
-void GenePlayer::spawnVoice (double overshoot, bool whole)
+// The splice the next gene will be in, kept inside the recorded part of the reel (no markers: the whole reel).
+void GenePlayer::targetSplice (const Reel& reel, double& start, double& len) const
+{
+    const int L = reel.length();
+    start = 0.0;
+    len = (double) std::max (1, L);
+    if (targets.spliceLength > 0 && L > 0)
+    {
+        const int s = std::min (L - 1, std::max (0, targets.spliceStart));
+        const int n = std::min (targets.spliceLength, L - s);
+        if (n >= 1)
+        {
+            start = (double) s;
+            len = (double) n;
+        }
+    }
+}
+
+void GenePlayer::spawnVoice (double overshoot, bool whole, const Reel& reel)
 {
     int slot = -1;
     for (int i = 0; i < kNumVoices; ++i)
@@ -103,6 +135,7 @@ void GenePlayer::spawnVoice (double overshoot, bool whole)
     Voice& v = voices[slot];
     v = Voice();
     v.active = true;
+    targetSplice (reel, v.start, v.len);
     if (whole)
         v.q = v.qBase = overshoot;
     else
@@ -142,7 +175,12 @@ double GenePlayer::headPosition (const Reel& reel) const
     if (length <= 0)
         return 0.0;
     const Voice& v = voices[newest];
-    return wrap (slideNow * (double) length + (v.active ? v.q : 0.0), (double) length);
+    if (v.active)
+        return v.start + wrap (slideNow * v.len + v.q, v.len);
+
+    double start, len;
+    targetSplice (reel, start, len);
+    return start + wrap (slideNow * len, len);
 }
 
 GenePlayer::View GenePlayer::view (const Reel& reel) const
@@ -152,15 +190,27 @@ GenePlayer::View GenePlayer::view (const Reel& reel) const
     if (length <= 0)
         return v;
 
-    const double L = (double) length;
+    // The window is drawn in the splice of the newest gene (or in the selected splice when nothing is playing).
+    double spliceStart, L;
+    if (voices[newest].active)
+    {
+        spliceStart = voices[newest].start;
+        L = voices[newest].len;
+    }
+    else
+        targetSplice (reel, spliceStart, L);
+
     const bool whole = targets.geneSeconds <= 0.0;
     const double start = std::min (L, std::max (0.0, slideNow * L));
     const double speed = std::max (0.05, std::fabs (rateNow));       // a stopped tape still shows its gene at normal size
     const double span = whole ? L : std::min (L, targets.geneSeconds * sampleRate * speed);
 
-    // Going forwards a gene is the stretch of reel after the Slide position; going backwards, the stretch before it.
+    // Going forwards a gene is the stretch of splice after the Slide position; going backwards, the stretch before it.
+    // The window is given from the start of the splice, wrapping round inside the splice.
     v.windowSpan = span;
-    v.windowStart = (! whole && rateNow < 0.0) ? wrap (start - span, L) : wrap (start, L);
+    v.windowStart = spliceStart + ((! whole && rateNow < 0.0) ? wrap (start - span, L) : wrap (start, L));
+    v.spliceStart = spliceStart;
+    v.spliceLength = L;
     v.geneSeconds = targets.geneSeconds;
     v.rate = (float) rateNow;
     v.voices = activeVoices();
@@ -180,7 +230,9 @@ GenePlayer::Out GenePlayer::step (const Reel& reel)
         return out;
     }
 
-    const double L = (double) length;
+    // The splice the next gene will be in. (Genes already playing keep the splice they started in.)
+    double targetStart, L;
+    targetSplice (reel, targetStart, L);
 
     // The tape's speed and the Slide position glide towards what the controls ask for.
     rateNow += ((double) targets.rate - rateNow) * (double) rateGlide;
@@ -188,7 +240,6 @@ GenePlayer::Out GenePlayer::step (const Reel& reel)
         rateNow = 0.0;                                 // settled at a standstill (and never creeping into tiny numbers)
     const double slideBefore = slideNow;
     slideNow += ((double) targets.slide - slideNow) * (double) slideGlide;
-    const double start = slideNow * L;
 
     // Silent when nothing moves (stopped tape, still Slide): otherwise a stopped head would hold one sample for ever.
     // Moving Slide counts as movement, so it scrubs even when the tape is stopped.
@@ -203,8 +254,10 @@ GenePlayer::Out GenePlayer::step (const Reel& reel)
     // or earlier (overlap).
     const bool whole = targets.geneSeconds <= 0.0;
     const double geneLength = whole ? L : std::max (2.0, targets.geneSeconds * sampleRate);
-    const double spacing = std::max (1.0, geneLength * (double) std::max (0.2f, targets.morph.spacing));
-    const int fadeLength = (int) std::min (geneLength, 2.0e9);
+    // A whole-splice gene is as long as the splice it started in, so the next one is due in terms of that splice, not of
+    // whichever splice is selected now (otherwise cutting a splice short would start the next gene early).
+    const double spacingBase = (whole && voices[newest].active) ? voices[newest].len : geneLength;
+    const double spacing = std::max (1.0, spacingBase * (double) std::max (0.2f, targets.morph.spacing));
 
     // Read the reel under every gene that is playing, and mix them.
     const float g = (float) gate;
@@ -213,21 +266,23 @@ GenePlayer::Out GenePlayer::step (const Reel& reel)
         if (! v.active)
             continue;
 
-        const double position = wrap (start + v.q, L);
+        const double position = v.start + wrap (slideNow * v.len + v.q, v.len);
         const float sampleL = reel.readCubic (0, position);
         const float sampleR = reel.readCubic (1, position);
 
         const double progress = whole ? std::fabs (v.qBase) : v.age;
+        const int fadeLength = (int) std::min (whole ? v.len : geneLength, 2.0e9);
         const float fade = dsp::edgeFade (progress, fadeLength, fadeSamples);
 
-        const float heardL = sampleL * fade * g * v.gainL;
-        const float heardR = sampleR * fade * g * v.gainR;
+        const float vg = g * v.releaseGain;
+        const float heardL = sampleL * fade * vg * v.gainL;
+        const float heardR = sampleR * fade * vg * v.gainR;
         out.heardL += heardL;
         out.heardR += heardR;
         // What is recorded back onto the reel: a short gene's fades are part of its sound, so they are kept; the fade at
         // the end of a whole-reel lap only hides the loop point when listening, so it is not baked into the recording.
-        out.recordL += whole ? sampleL * g * v.gainL : heardL;
-        out.recordR += whole ? sampleR * g * v.gainR : heardR;
+        out.recordL += whole ? sampleL * vg * v.gainL : heardL;
+        out.recordR += whole ? sampleR * vg * v.gainR : heardR;
     }
 
     // Move every gene on, and retire the ones that are finished.
@@ -236,11 +291,20 @@ GenePlayer::Out GenePlayer::step (const Reel& reel)
     {
         if (! v.active)
             continue;
+        if (v.releasing)
+        {
+            v.releaseGain -= 1.0f / (float) fadeSamples;
+            if (v.releaseGain <= 0.0f)
+            {
+                v.active = false;
+                continue;
+            }
+        }
         v.q += rateNow * (double) v.mult;
         v.qBase += rateNow;
         if (moving)
             v.age += 1.0;
-        if ((whole ? std::fabs (v.qBase) : v.age) >= geneLength)
+        if ((whole ? std::fabs (v.qBase) : v.age) >= (whole ? v.len : geneLength))
             v.active = false;
     }
 
@@ -257,7 +321,7 @@ GenePlayer::Out GenePlayer::step (const Reel& reel)
             overshoot = std::fmod (overshoot, spacing);                 // the controls jumped: stay on the beat
         clock = overshoot;
         if (targets.playWanted)
-            spawnVoice (overshoot, whole);
+            spawnVoice (overshoot, whole, reel);
     }
 
     // Play was switched off: the genes in progress are the last ones, then stop.

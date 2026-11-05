@@ -34,14 +34,29 @@ void PhenomeEonProcessor::timerCallback()
     if (engine.takeRecordStopped())
         switchOff (PheParams::rec);
 
+    if (engine.takeNewSpliceStopped())
+        switchOff (PheParams::recNewSplice);
+
     if (engine.takeClearHandled())
         switchOff (PheParams::clearReel);
 
-    // A project saved while Rec or Clear Reel was on must not start recording or clearing when it is opened.
+    // Splice, Shift, Delete Splice Marker and Delete All Markers act the moment they go on; then they go back off.
+    const int handled = engine.takeHandledButtons();
+    if ((handled & phe::Engine::kButtonSplice) != 0)           switchOff (PheParams::splice);
+    if ((handled & phe::Engine::kButtonShift) != 0)            switchOff (PheParams::shift);
+    if ((handled & phe::Engine::kButtonDeleteMarker) != 0)     switchOff (PheParams::deleteMarker);
+    if ((handled & phe::Engine::kButtonDeleteAllMarkers) != 0) switchOff (PheParams::deleteAllMarkers);
+
+    // A project saved while one of these was on must not record, clear or cut when it is opened.
     if (switchTransientButtonsOff.exchange (false))
     {
         switchOff (PheParams::rec);
+        switchOff (PheParams::recNewSplice);
         switchOff (PheParams::clearReel);
+        switchOff (PheParams::splice);
+        switchOff (PheParams::shift);
+        switchOff (PheParams::deleteMarker);
+        switchOff (PheParams::deleteAllMarkers);
     }
 }
 

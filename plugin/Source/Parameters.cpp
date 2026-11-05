@@ -23,15 +23,14 @@ juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
     juce::AudioProcessorValueTreeState::ParameterLayout layout;
 
     // The eight knobs. The starting positions of the ones that do something now (Input Level, Sound On Sound,
-    // Gene-Size, Slide, Vari-Speed, Morph, Output Level) come from the engine's list, so there is one source for them;
-    // Organize is a placeholder until it gets its sound.
+    // Gene-Size, Slide, Vari-Speed, Morph, Organize, Output Level) come from the engine's list, so there is one source for them.
     layout.add (knob (inputLevel,   "Input Level",    phe::kDefaultInputLevel));
     layout.add (knob (soundOnSound, "Sound On Sound", phe::kDefaultSoundOnSound));
     layout.add (knob (geneSize,     "Gene-Size",      phe::kDefaultGeneSize));
     layout.add (knob (slide,        "Slide",          phe::kDefaultSlide));
     layout.add (knob (variSpeed,    "Vari-Speed",     phe::kDefaultVariSpeed));
     layout.add (knob (morph,        "Morph",          phe::kDefaultMorph));
-    layout.add (knob (organize,     "Organize",       0.5f));
+    layout.add (knob (organize,     "Organize",       phe::kDefaultOrganize));
     layout.add (knob (outputLevel,  "Output Level",   phe::kDefaultOutputLevel));
 
     // Input gain step: -3 / 0 / +6 / +12 dB, starting at 0 dB (the engine's table is the single source of these numbers).

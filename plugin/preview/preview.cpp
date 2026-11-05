@@ -539,6 +539,112 @@ int main (int argc, char** argv)
         resetAll (proc);
     }
 
+    // ---------------- splices through the real processor (milestone 7) ----------------
+    {
+        resetAll (proc);
+        long long clock = 0;
+        feed (proc, clock, 4);
+        setParameter (proc, PheParams::rec, 1.0f);
+        feed (proc, clock, 560);                                    // about 6 seconds
+        setParameter (proc, PheParams::rec, 0.0f);
+        feed (proc, clock, 3);
+        feedSilenceLoudest (proc, 40);
+        const auto view = [&proc] { return proc.getEngine().getReelView(); };
+        const int reelLength = view().lengthSamples;
+        expect (reelLength > 250000 && view().numSplices == 1, "wrapper (M7): a 6 second reel, one splice (" + juce::String (reelLength) + ")");
+        expect (std::abs (parameterValue (proc, PheParams::organize) - phe::kDefaultOrganize) < 1.0e-6f, "wrapper (M7): Organize starts fully left");
+
+        // Splice: drops a marker, and the button switches itself off
+        setParameter (proc, PheParams::splice, 1.0f);
+        feedSilenceLoudest (proc, 2);
+        letWindowThreadRun (200);
+        expect (view().numSplices == 2, "wrapper (M7): Splice drops a marker (" + juce::String (view().numSplices) + " splices)");
+        expect (parameterValue (proc, PheParams::splice) < 0.5f, "wrapper (M7): the Splice button switches itself off");
+        feedSilenceLoudest (proc, 300);
+        setParameter (proc, PheParams::splice, 1.0f);
+        feedSilenceLoudest (proc, 2);
+        letWindowThreadRun (200);
+        expect (view().numSplices == 3, "wrapper (M7): a second Splice makes three splices (" + juce::String (view().numSplices) + ")");
+        feedSilenceLoudest (proc, 20);
+
+        // Shift and Organize
+        expect (view().selectedSplice == 0, "wrapper (M7): splice 1 is selected");
+        setParameter (proc, PheParams::shift, 1.0f);
+        feedSilenceLoudest (proc, 2);
+        letWindowThreadRun (200);
+        expect (view().selectedSplice == 1, "wrapper (M7): Shift selects the next splice");
+        expect (parameterValue (proc, PheParams::shift) < 0.5f, "wrapper (M7): the Shift button switches itself off");
+        setParameter (proc, PheParams::organize, 0.9f);
+        feedSilenceLoudest (proc, 2);
+        expect (view().selectedSplice == 2, "wrapper (M7): Organize at 0.9 selects the third splice");
+        feedSilenceLoudest (proc, 1500);                            // long enough for the waiting splice to take over
+        expect (view().playingSplice == 2, "wrapper (M7): the third splice plays (" + juce::String (view().playingSplice + 1) + ")");
+        expect (feedSilenceLoudest (proc, 100) > 0.02f, "wrapper (M7): the selected splice makes sound");
+        {
+            PhenomeEonEditor editor (proc);
+            editor.showView (PhenomeEonEditor::View::styled);
+            editor.setSize (1200, 800);
+            letWindowThreadRun (150);
+            save (editor, outDir.getChildFile ("styled_splices.png"), 1654.0f / 1200.0f);
+        }
+
+        // Delete Splice Marker, Delete All Markers
+        setParameter (proc, PheParams::organize, 0.0f);
+        feedSilenceLoudest (proc, 2);
+        setParameter (proc, PheParams::deleteMarker, 1.0f);
+        feedSilenceLoudest (proc, 2);
+        letWindowThreadRun (200);
+        expect (view().numSplices == 2, "wrapper (M7): Delete Splice Marker joins two splices (" + juce::String (view().numSplices) + ")");
+        expect (parameterValue (proc, PheParams::deleteMarker) < 0.5f, "wrapper (M7): the Delete Splice Marker button switches itself off");
+        setParameter (proc, PheParams::deleteAllMarkers, 1.0f);
+        feedSilenceLoudest (proc, 2);
+        letWindowThreadRun (200);
+        expect (view().numSplices == 1, "wrapper (M7): Delete All Markers leaves one splice");
+        expect (parameterValue (proc, PheParams::deleteAllMarkers) < 0.5f, "wrapper (M7): the Delete All Markers button switches itself off");
+
+        // Rec New Splice: a switch. On = recording a new splice; off = stop.
+        setParameter (proc, PheParams::recNewSplice, 1.0f);
+        feed (proc, clock, 200);
+        expect (view().recording, "wrapper (M7): Rec New Splice records");
+        expect (view().lengthSamples > reelLength + 90000, "wrapper (M7): the reel grows while it records (" + juce::String (view().lengthSamples) + ")");
+        {
+            PhenomeEonEditor editor (proc);
+            editor.showView (PhenomeEonEditor::View::styled);
+            editor.setSize (1200, 800);
+            letWindowThreadRun (150);
+            save (editor, outDir.getChildFile ("styled_recording_new_splice.png"), 1654.0f / 1200.0f);
+        }
+        setParameter (proc, PheParams::recNewSplice, 0.0f);
+        feed (proc, clock, 3);
+        expect (! view().recording && view().numSplices == 2 && view().selectedSplice == 1,
+                "wrapper (M7): stopped; a second splice, selected (" + juce::String (view().numSplices) + " splices)");
+        expect (feedSilenceLoudest (proc, 100) > 0.02f, "wrapper (M7): the new splice plays");
+
+        // A project saved while a momentary button was on must not act when it is opened
+        setParameter (proc, PheParams::splice, 1.0f);
+        setParameter (proc, PheParams::deleteAllMarkers, 1.0f);
+        setParameter (proc, PheParams::recNewSplice, 1.0f);
+        juce::MemoryBlock whileOn;
+        proc.getStateInformation (whileOn);
+        setParameter (proc, PheParams::splice, 0.0f);
+        setParameter (proc, PheParams::deleteAllMarkers, 0.0f);
+        setParameter (proc, PheParams::recNewSplice, 0.0f);
+        PhenomeEonProcessor reopened;
+        reopened.setPlayConfigDetails (2, 2, 48000.0, 512);
+        reopened.prepareToPlay (48000.0, 512);
+        reopened.setStateInformation (whileOn.getData(), (int) whileOn.getSize());
+        letWindowThreadRun (200);
+        expect (parameterValue (reopened, PheParams::splice) < 0.5f && parameterValue (reopened, PheParams::deleteAllMarkers) < 0.5f
+                    && parameterValue (reopened, PheParams::recNewSplice) < 0.5f && parameterValue (reopened, PheParams::shift) < 0.5f,
+                "wrapper (M7): a project saved with the splice buttons on opens with them off");
+
+        setParameter (proc, PheParams::clearReel, 1.0f);
+        feedSilenceLoudest (proc, 2);
+        letWindowThreadRun (200);
+        expect (view().numSplices == 1, "wrapper (M7): Clear Reel takes the markers away");
+        resetAll (proc);
+    }
+
     // ---------------- pictures ----------------
     // Knob positions roughly like the mockup, so the pictures can be compared with it
     const std::map<juce::String, float> mockLike {

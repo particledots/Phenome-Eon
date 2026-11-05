@@ -2,8 +2,9 @@
 // to the engine. It contains no sound-making code.
 //
 // One housekeeping job: a few times a second, on the window thread, it checks whether the engine switched
-// something off by itself (the Rec switch when the reel is full, the Clear Reel button after it has acted)
-// and switches the matching control off too, so the buttons always show the truth.
+// something off by itself (the Rec and Rec New Splice switches when the reel is full, the Clear Reel, Splice, Shift,
+// Delete Splice Marker and Delete All Markers buttons after they have acted) and switches the matching control off
+// too, so the buttons always show the truth.
 
 #pragma once
 

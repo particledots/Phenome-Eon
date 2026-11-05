@@ -2,11 +2,13 @@
 // Milestone 4: the reel, recording, Sound On Sound and basic playback.
 // Milestone 5: the tape head and genes (Vari-Speed, Gene-Size, Slide) and Pitch Snap.
 // Milestone 6: Morph (gaps, overlaps, random pitch-up and pan) and Pitch Scale.
+// Milestone 7: splices (Splice, Shift, Organize, deleting markers, recording into a new splice).
 
 #include <phe/Engine.h>
 #include <phe/core/Gain.h>
 #include <phe/core/Morph.h>
 #include <phe/core/Scales.h>
+#include <phe/core/SpliceMap.h>
 #include <phe/core/VariSpeed.h>
 #include <phe/GenePlayer.h>
 
@@ -607,6 +609,8 @@ static void testExtremeControlsStayFinite()
         r.p.inputGainStep = (int) (rnd() * 3.99f);
         r.p.rec = rnd() > 0.7f;   r.p.play = rnd() > 0.3f;   r.p.clearReel = rnd() > 0.97f;
         r.p.splice = r.p.shift = r.p.undo = r.p.eraseSplice = rnd() > 0.5f;
+        r.p.recNewSplice = rnd() > 0.8f;  r.p.deleteMarker = rnd() > 0.8f;  r.p.deleteAllMarkers = rnd() > 0.95f;
+        r.p.organize = rnd();
         const auto out = r.run (256, 256, tone);
         for (int c = 0; c < 2; ++c)
             for (float v : out[(size_t) c])
@@ -1081,16 +1085,15 @@ static void testRecordSpeedIsConstant()
 
 static void testControlsNotYetUsed()
 {
-    // Organize and the splice buttons are stored but do not change the sound yet.
+    // Erase Splice and Undo are stored but do not change the sound yet (milestone 8).
     Rig a, b;
-    b.p.organize = 1.0f;
-    b.p.splice = b.p.shift = true;
+    b.p.eraseSplice = b.p.undo = true;
     a.recordFirstTake (12000, 500);
     b.recordFirstTake (12000, 500);
     const auto oa = a.run (30000, 500, tone);
     const auto ob = b.run (30000, 500, tone);
     CHECK (oa[0] == ob[0] && oa[1] == ob[1], "the controls that are not used yet do not change the sound");
-    CHECK (b.e.getParams().organize == 1.0f, "stored control values");
+    CHECK (b.e.getParams().eraseSplice && b.e.getParams().undo, "stored control values");
 }
 
 static void testEdgeCases()
@@ -1535,6 +1538,577 @@ static void testMorphPlayOffStoppedAndRecording()
     }
 }
 
+//==============================================================================
+// ---- milestone 7: splices ----
+
+static float twoHalves (int, long long t) { return t < 6000 ? 0.1f : 0.3f; }     // 0.1 for the first 6000 samples, then 0.3
+static float negativeSound (int, long long) { return -0.4f; }
+static float steadySound (int, long long) { return 0.7f; }
+
+static std::vector<int> markersOf (const phe::Engine& e)
+{
+    int buffer[phe::core::kMaxSpliceMarkers];
+    const int n = e.getSpliceMap().snapshot (buffer, phe::core::kMaxSpliceMarkers);
+    return std::vector<int> (buffer, buffer + n);
+}
+
+// Press a momentary button: it goes on for one block (the engine acts at the start of it), then off again.
+static void press (Rig& r, bool& button)
+{
+    button = true;
+    r.run (100, 100, silence);
+    button = false;
+    r.run (100, 100, silence);
+}
+
+// A reel of 12000 samples (0.1 for the first half, 0.3 for the second) playing as one splice, with the head at 'head'.
+static void spliceRig (Rig& r, int head)
+{
+    r.recordFirstTake (12000, 500, twoHalves);       // afterwards the head is at 500
+    r.run (head - 500, 500, silence);
+}
+
+// Three splices: [0, 2000), [2000, 6000), [6000, 12000). The organize knob is fully left (splice 1 selected).
+static void threeSplices (Rig& r)
+{
+    spliceRig (r, 2000);
+    press (r, r.p.splice);
+    r.run (3800, 500, silence);                      // the head has moved 200 samples during the press
+    press (r, r.p.splice);
+}
+
+static float maxAbs (const std::vector<float>& v)
+{
+    float m = 0.0f;
+    for (float x : v)
+        m = std::max (m, std::fabs (x));
+    return m;
+}
+
+static void testSpliceMapAndSelector()
+{
+    using namespace phe::core;
+    SpliceMap m;
+    CHECK (m.numSplices() == 1 && m.numMarkers() == 0, "no markers: one splice");
+    CHECK (m.start (0) == 0 && m.end (0, 1000) == 1000 && m.length (0, 1000) == 1000, "one splice is the whole reel");
+
+    CHECK (m.addMarker (500, 1000) == 0, "first marker is marker 0");
+    CHECK (m.numSplices() == 2 && m.marker (0) == 500, "two splices");
+    CHECK (m.start (1) == 500 && m.end (0, 1000) == 500 && m.end (1, 1000) == 1000, "splice edges");
+    CHECK (m.indexAt (0, 1000) == 0 && m.indexAt (499, 1000) == 0 && m.indexAt (500, 1000) == 1 && m.indexAt (999, 1000) == 1,
+           "which splice a position is in (a marker belongs to the splice after it)");
+
+    CHECK (m.addMarker (200, 1000) == 0, "a marker in the first splice becomes marker 0");
+    CHECK (m.marker (0) == 200 && m.marker (1) == 500, "markers stay in order");
+    CHECK (m.addMarker (800, 1000) == 2, "a marker in the last splice goes on the end");
+    CHECK (m.numSplices() == 4, "four splices");
+
+    // Refusals: too close to a neighbour or to the ends, outside the reel, a duplicate
+    CHECK (m.addMarker (200 + kMinSpliceSamples - 1, 1000) == -1, "too close to the marker before it");
+    CHECK (m.addMarker (500 - kMinSpliceSamples + 1, 1000) == -1, "too close to the marker after it");
+    CHECK (m.addMarker (kMinSpliceSamples - 1, 1000) == -1, "too close to the start");
+    CHECK (m.addMarker (1000 - kMinSpliceSamples + 1, 1000) == -1, "too close to the end");
+    CHECK (m.addMarker (500, 1000) == -1, "no second marker in the same place");
+    CHECK (m.addMarker (-5, 1000) == -1 && m.addMarker (1000, 1000) == -1 && m.addMarker (3000, 1000) == -1, "outside the reel");
+    CHECK (m.addMarker (300, 0) == -1, "nothing on an empty reel");
+    CHECK (m.numSplices() == 4, "refused markers change nothing");
+    CHECK (m.addMarker (200 + kMinSpliceSamples, 1000) == 1, "exactly the minimum distance is allowed");
+
+    // Taking markers away joins splices
+    CHECK (! m.removeMarker (-1) && ! m.removeMarker (m.numMarkers()), "no such marker");
+    const int before = m.numSplices();
+    CHECK (m.removeMarker (1), "remove marker 1");
+    CHECK (m.numSplices() == before - 1 && m.marker (1) == 500, "the others close up");
+    m.clear();
+    CHECK (m.numSplices() == 1, "clear");
+
+    // The most markers
+    SpliceMap big;
+    int made = 0;
+    for (int i = 1; i <= 320; ++i)
+        if (big.addMarker (i * 100, 40000) >= 0)
+            ++made;
+    CHECK (made == kMaxSpliceMarkers && big.numSplices() == kMaxSplices, "at most 299 markers = 300 splices: %d", made);
+    int copy[kMaxSpliceMarkers];
+    CHECK (big.snapshot (copy, kMaxSpliceMarkers) == kMaxSpliceMarkers && copy[0] == 100 && copy[298] == 29900, "snapshot copies the list");
+    CHECK (big.snapshot (copy, 10) == 10, "snapshot never gives more than asked for");
+
+    // Sample-rate conversion moves the markers with the audio and drops any that no longer fit
+    SpliceMap c;
+    c.addMarker (1000, 5000);
+    c.addMarker (1100, 5000);
+    c.addMarker (3000, 5000);
+    c.rescale (2.0, 10000);
+    CHECK (c.numMarkers() == 3 && c.marker (0) == 2000 && c.marker (1) == 2200 && c.marker (2) == 6000, "markers doubled with the rate");
+    c.rescale (0.05, 500);
+    CHECK (c.numMarkers() == 2 && c.marker (0) == 100 && c.marker (1) == 300, "a marker that becomes too close to its neighbour is dropped: %d", c.numMarkers());
+
+    // Organize zones
+    CHECK (organizeZone (0.0f, 1) == 0 && organizeZone (1.0f, 1) == 0, "one splice: always zone 0");
+    CHECK (organizeZone (0.0f, 4) == 0 && organizeZone (0.2499f, 4) == 0 && organizeZone (0.25f, 4) == 1 && organizeZone (0.7499f, 4) == 2
+              && organizeZone (0.75f, 4) == 3 && organizeZone (1.0f, 4) == 3, "four equal zones, the last one reaches the end of the knob");
+    CHECK (organizeZone (-1.0f, 3) == 0 && organizeZone (7.0f, 3) == 2 && organizeZone (std::numeric_limits<float>::quiet_NaN(), 3) == 0,
+           "out-of-range knob values are limited");
+    int hits[300] = {};
+    for (int i = 0; i <= 10000; ++i)
+        ++hits[organizeZone ((float) i / 10000.0f, 300)];
+    bool even = true;
+    for (int z = 0; z < 300; ++z)
+        if (hits[z] < 30 || hits[z] > 37)
+            even = false;
+    CHECK (even, "300 splices share the knob evenly");
+
+    // The selector: Shift steps on and wraps; Organize wins when it moves into a new zone
+    SpliceSelector sel;
+    sel.sync (0.0f, 3);
+    CHECK (sel.selected() == 0, "starts on the zone the knob is in");
+    sel.update (0.0f, 3, true);   CHECK (sel.selected() == 1, "Shift: next splice");
+    sel.update (0.0f, 3, true);   CHECK (sel.selected() == 2, "Shift again");
+    sel.update (0.0f, 3, true);   CHECK (sel.selected() == 0, "Shift after the last: back to the first");
+    sel.update (0.0f, 3, false);  CHECK (sel.selected() == 0, "nothing changes without a press");
+    sel.update (0.5f, 3, false);  CHECK (sel.selected() == 1, "Organize into another zone selects it");
+    sel.update (0.55f, 3, true);  CHECK (sel.selected() == 2, "Shift moves on from where Organize put it");
+    sel.update (0.6f, 3, false);  CHECK (sel.selected() == 2, "Organize moving inside the same zone does not override Shift");
+    sel.update (0.9f, 3, false);  CHECK (sel.selected() == 2, "(zone 2 is where we are)");
+    sel.update (0.1f, 3, false);  CHECK (sel.selected() == 0, "Organize into zone 0");
+    sel.update (0.7f, 3, true);   CHECK (sel.selected() == 2, "Organize wins over Shift when both happen in one block");
+
+    SpliceSelector one;
+    one.sync (0.0f, 1);
+    one.update (0.3f, 1, true);
+    CHECK (one.selected() == 0, "Shift with one splice does nothing");
+
+    // More splices appear under a still knob: nothing is selected by the knob
+    SpliceSelector grow;
+    grow.sync (0.9f, 3);
+    CHECK (grow.selected() == 2, "knob at 0.9 selects the last of three");
+    grow.update (0.9f, 4, false);
+    CHECK (grow.selected() == 2, "a marker added: the selection stays, the knob did not move");
+    grow.update (0.9f, 4, false);
+    grow.update (0.4f, 4, false);
+    CHECK (grow.selected() == 1, "moving the knob into another zone selects it again");
+
+    SpliceSelector keep;
+    keep.sync (0.0f, 3);
+    keep.update (0.0f, 3, true);       // selected 1
+    keep.markerInserted (0);           CHECK (keep.selected() == 2, "a marker in front: the selected splice moves up one");
+    keep.markerInserted (2);           CHECK (keep.selected() == 2, "a marker in the selected splice: it keeps the front part");
+    keep.markerRemoved (0);            CHECK (keep.selected() == 1, "a marker removed in front: the selection moves down one");
+    keep.markerRemoved (1);            CHECK (keep.selected() == 1, "a marker removed after it: the selection stays on the joined splice");
+}
+
+static void testSpliceDropsMarkerAtHead()
+{
+    Rig r;
+    spliceRig (r, 6000);
+    const int head = r.e.getReelView().playPos;
+    CHECK (head == 6000, "the head is where we think: %d", head);
+    CHECK (r.e.getSpliceMap().numSplices() == 1 && r.e.getReelView().numSplices == 1, "one splice to begin with");
+
+    r.p.splice = true;
+    r.run (100, 100, silence);
+    CHECK (markersOf (r.e) == std::vector<int> { head }, "Splice drops a marker exactly where the head is");
+    CHECK (r.e.getReelView().numSplices == 2, "the view shows two splices");
+    CHECK (r.e.getReelView().selectedSplice == 0, "the splice that was cut keeps its number (the part before the marker)");
+    CHECK ((r.e.takeHandledButtons() & phe::Engine::kButtonSplice) != 0, "the wrapper is told the button was used");
+    CHECK (r.e.takeHandledButtons() == 0, "that message is given only once");
+
+    // Held on: nothing more happens until it goes off and on again
+    r.run (1000, 100, silence);
+    CHECK (r.e.getSpliceMap().numSplices() == 2, "holding Splice on does not keep adding markers");
+    r.p.splice = false;
+    r.run (100, 100, silence);
+
+    // Where the tape is stopped, a second press in the same place is refused (a splice must be at least 64 samples)
+    r.p.variSpeed = 0.5f;
+    r.run (3000, 500, silence);
+    press (r, r.p.splice);
+    const size_t afterFirst = markersOf (r.e).size();
+    press (r, r.p.splice);
+    CHECK (markersOf (r.e).size() == afterFirst, "no second marker in the same place");
+    CHECK ((r.e.takeHandledButtons() & phe::Engine::kButtonSplice) != 0, "a refused press still tells the wrapper to switch the button off");
+
+    // Nothing to splice on an empty reel, but the button is still handed back
+    Rig e;
+    press (e, e.p.splice);
+    CHECK (e.e.getSpliceMap().numSplices() == 1, "no marker on an empty reel");
+    CHECK ((e.e.takeHandledButtons() & phe::Engine::kButtonSplice) != 0, "the button is handed back");
+
+    // A button that is already on when the plugin starts counts as "loaded that way", not as a press
+    Rig f (48000.0, 2, false);
+    f.p.splice = f.p.shift = f.p.deleteMarker = f.p.deleteAllMarkers = f.p.recNewSplice = true;
+    f.run (1000, 100, silence);
+    CHECK (f.e.takeHandledButtons() == 0 && ! f.e.getReelView().recording, "buttons that are on in the very first block do nothing");
+}
+
+static void testSelectedSplicePlaysAndWaits()
+{
+    Rig r;
+    spliceRig (r, 6000);
+    press (r, r.p.splice);                           // splice 1 = [0, 6000): the 0.1 half; splice 2 = the 0.3 half
+
+    // The whole-reel gene in progress runs on to its end (it still reads the 0.3 half); after that the selected splice loops
+    r.run (7000, 500, silence);
+    const auto only0 = r.run (30000, 500, silence);
+    const float m0 = maxAbs (only0[0]);
+    CHECK (m0 > 0.099f && m0 <= 0.1f + 1.0e-4f, "splice 1 plays only its own 0.1 half: peak %f", m0);
+    CHECK (maxAbs (only0[1]) <= 0.1f + 1.0e-4f, "both channels");
+    CHECK (r.e.getReelView().playingSplice == 0, "the view says splice 1 is playing");
+
+    // Wait until a gene has only just started, then press Shift
+    for (int i = 0; i < 100 && ! (r.e.getReelView().playPos >= 1000 && r.e.getReelView().playPos < 1600); ++i)
+        r.run (100, 100, silence);
+    const int at = r.e.getReelView().playPos;
+    CHECK (at >= 1000 && at < 1600, "waited for the start of a pass: %d", at);
+    press (r, r.p.shift);
+    CHECK ((r.e.takeHandledButtons() & phe::Engine::kButtonShift) != 0, "the wrapper is told Shift was used");
+    CHECK (r.e.getReelView().selectedSplice == 1, "Shift selects splice 2");
+    CHECK (r.e.getReelView().playingSplice == 0, "but splice 1 is still the one playing");
+
+    const auto waiting = r.run (4000, 500, silence);
+    CHECK (maxAbs (waiting[0]) <= 0.1f + 1.0e-4f, "the new splice waits until the pass in progress ends: %f", maxAbs (waiting[0]));
+    CHECK (r.e.getReelView().playingSplice == 0, "still splice 1");
+
+    const auto after = r.run (8000, 500, silence);
+    CHECK (maxAbs (after[0]) > 0.29f, "then splice 2 plays (0.3): %f", maxAbs (after[0]));
+    CHECK (r.e.getReelView().playingSplice == 1, "the view says splice 2 is playing now");
+
+    // Splice 2 keeps playing on its own, never the 0.1 half
+    const auto onlySecond = r.run (30000, 500, silence);
+    float low = 1.0f;
+    for (float v : onlySecond[0])
+        if (std::fabs (v) > 0.2f)
+            low = std::min (low, std::fabs (v));
+    CHECK (maxAbs (onlySecond[0]) > 0.29f && maxAbs (onlySecond[0]) <= 0.3f + 1.0e-4f, "splice 2 plays its 0.3: %f", maxAbs (onlySecond[0]));
+    (void) low;
+}
+
+static void testOrganizeAndShiftInEngine()
+{
+    Rig r;
+    threeSplices (r);
+    CHECK (markersOf (r.e) == (std::vector<int> { 2000, 6000 }), "three splices: markers at %d, %d", markersOf (r.e).empty() ? -1 : markersOf (r.e)[0],
+           markersOf (r.e).size() > 1 ? markersOf (r.e)[1] : -1);
+    auto selected = [&r] { return r.e.getReelView().selectedSplice; };
+    CHECK (r.e.getReelView().numSplices == 3 && selected() == 0, "starts on splice 1");
+
+    r.p.organize = 0.5f;   r.run (100, 100, silence);   CHECK (selected() == 1, "Organize at the middle: splice 2");
+    press (r, r.p.shift);                               CHECK (selected() == 2, "Shift: splice 3");
+    press (r, r.p.shift);                               CHECK (selected() == 0, "Shift: back to splice 1");
+    r.p.organize = 0.55f;  r.run (100, 100, silence);   CHECK (selected() == 0, "Organize still in the same zone: Shift's choice stands");
+    r.p.organize = 0.9f;   r.run (100, 100, silence);   CHECK (selected() == 2, "Organize into the last zone: splice 3");
+    r.p.organize = 0.1f;   r.run (100, 100, silence);   CHECK (selected() == 0, "Organize into the first zone: splice 1");
+
+    // A press of Shift and a move of Organize in the same block: Organize wins
+    r.p.shift = true;  r.p.organize = 0.9f;
+    r.run (100, 100, silence);
+    r.p.shift = false;
+    CHECK (selected() == 2, "Organize takes priority over Shift");
+}
+
+static void testDeleteMarkers()
+{
+    Rig r;
+    threeSplices (r);
+    r.p.organize = 0.5f;
+    r.run (100, 100, silence);
+    CHECK (r.e.getReelView().selectedSplice == 1, "splice 2 selected");
+
+    press (r, r.p.deleteMarker);
+    CHECK (markersOf (r.e) == std::vector<int> { 2000 }, "the marker at the end of the selected splice goes: it joins the next one");
+    CHECK (r.e.getReelView().numSplices == 2 && r.e.getReelView().selectedSplice == 1, "still selected: the joined splice");
+    CHECK ((r.e.takeHandledButtons() & phe::Engine::kButtonDeleteMarker) != 0, "the wrapper is told");
+
+    press (r, r.p.deleteMarker);
+    CHECK (markersOf (r.e) == std::vector<int> { 2000 }, "the last splice has no marker after it: nothing happens");
+
+    r.p.organize = 0.0f;
+    r.run (100, 100, silence);
+    press (r, r.p.deleteMarker);
+    CHECK (markersOf (r.e).empty() && r.e.getReelView().numSplices == 1, "the last marker goes: one splice again");
+
+    // Delete All Markers
+    Rig q;
+    threeSplices (q);
+    q.p.organize = 0.9f;
+    q.run (100, 100, silence);
+    CHECK (q.e.getReelView().selectedSplice == 2, "splice 3 selected");
+    press (q, q.p.deleteAllMarkers);
+    CHECK (markersOf (q.e).empty() && q.e.getReelView().numSplices == 1, "all markers gone");
+    CHECK (q.e.getReelView().selectedSplice == 0, "one splice, selected");
+    CHECK ((q.e.takeHandledButtons() & phe::Engine::kButtonDeleteAllMarkers) != 0, "the wrapper is told");
+    q.run (14000, 500, silence);
+    const auto out = q.run (30000, 500, silence);
+    CHECK (maxAbs (out[0]) > 0.29f, "the whole reel plays again, including the 0.3 half: %f", maxAbs (out[0]));
+    CHECK (q.e.getReel().length() == 12000, "the audio itself is untouched");
+}
+
+static void testRecordOverStaysInItsSplice()
+{
+    Rig r;
+    spliceRig (r, 3000);
+    press (r, r.p.splice);                       // marker at 3000: splice 1 = [0, 3000) (0.1), splice 2 = [3000, 12000)
+    // Wait until the pass in splice 1 is the one playing
+    r.run (10000, 500, silence);
+    for (int i = 0; i < 200 && ! (r.e.getReelView().playingSplice == 0 && r.e.getReelView().playPos < 2000); ++i)
+        r.run (100, 100, silence);
+    CHECK (r.e.getReelView().playingSplice == 0, "splice 1 is playing");
+
+    // Record steady live sound over it for much longer than the splice, with only the live sound recorded
+    r.p.soundOnSound = 0.0f;
+    r.p.rec = true;
+    r.run (20000, 500, steadySound);
+    r.p.rec = false;
+    r.run (1000, 500, steadySound);              // the live sound carries on while the recording fades out (punch-out)
+    r.p.soundOnSound = 0.5f;
+
+    CHECK (r.e.getReel().length() == 12000 && markersOf (r.e) == std::vector<int> { 3000 }, "length and markers unchanged");
+    bool insideNew = true, outsideOld = true;
+    for (int i = 100; i < 2900; ++i)
+        if (std::fabs (r.e.getReel().get (0, i) - 0.7f) > 1.0e-4f) insideNew = false;
+    for (int i = 3000; i < 6000; ++i)
+        if (std::fabs (r.e.getReel().get (0, i) - 0.1f) > 1.0e-4f && std::fabs (r.e.getReel().get (0, i) - 0.3f) > 1.0e-4f) outsideOld = false;
+    for (int i = 6000; i < 12000; ++i)
+        if (std::fabs (r.e.getReel().get (0, i) - 0.3f) > 1.0e-4f) outsideOld = false;
+    CHECK (insideNew, "the whole of splice 1 now holds the new sound (the recording went round that splice)");
+    CHECK (outsideOld, "nothing outside splice 1 was touched");
+}
+
+static void testRecordNewSplice()
+{
+    Rig r;
+    spliceRig (r, 6000);
+    press (r, r.p.splice);                       // two splices, 0.1 | 0.3
+    const float before0 = r.e.getReel().get (0, 100), before1 = r.e.getReel().get (0, 9000);
+    const int oldLength = r.e.getReel().length();
+
+    r.p.soundOnSound = 0.0f;                     // only the live sound goes onto the new splice
+    r.run (8000, 500, silence);                  // (the knob glides over 10 ms: let it settle first)
+    r.p.recNewSplice = true;
+    r.run (4000, 500, negativeSound);
+    auto view = r.e.getReelView();
+    CHECK (view.recording, "recording a new splice");
+    CHECK (view.lengthSamples >= oldLength + 3500 && view.newSpliceBase == oldLength, "the reel shows as growing: %d, base %d", view.lengthSamples, view.newSpliceBase);
+    CHECK (r.e.getReel().length() == oldLength && markersOf (r.e).size() == 1, "nothing is committed until the recording stops");
+    CHECK (view.playing, "the old splices keep playing while the new one is recorded");
+
+    r.p.recNewSplice = false;
+    r.run (500, 500, silence);
+    r.p.soundOnSound = 0.5f;                     // loop and live both heard again
+    view = r.e.getReelView();
+    CHECK (! view.recording, "stopped");
+    CHECK (r.e.getReel().length() == oldLength + 4000, "the reel is 4000 samples longer: %d", r.e.getReel().length());
+    CHECK ((markersOf (r.e) == std::vector<int> { 6000, oldLength }), "a marker at the old end of the reel");
+    CHECK (view.numSplices == 3 && view.selectedSplice == 2, "the new splice is splice 3 and is selected");
+    CHECK (std::fabs (r.e.getReel().get (0, oldLength + 2000) + 0.4f) < 1.0e-4f && std::fabs (r.e.getReel().get (1, oldLength + 3900) + 0.4f) < 1.0e-4f,
+           "the new sound is on the new splice");
+    CHECK (r.e.getReel().get (0, 100) == before0 && r.e.getReel().get (0, 9000) == before1, "the old splices are untouched");
+    CHECK (! r.e.takeNewSpliceStopped(), "stopping it yourself needs no message to the wrapper");
+
+    // It loops straight away: the next sound heard is the new splice (negative), never the old ones
+    const auto out = r.run (6000, 500, silence);
+    CHECK (std::fabs (maxAbs (out[0]) - 0.4f) < 0.02f, "the new splice plays: %f", maxAbs (out[0]));
+    float mostPositive = 0.0f;
+    for (float v : out[0])
+        mostPositive = std::max (mostPositive, v);
+    CHECK (mostPositive < 0.01f, "none of the old sound is heard after it: %f", mostPositive);
+
+    // The waveform picture reaches the new splice
+    float l = 0.0f, rr = 0.0f;
+    r.e.getReel().peaks.get ((oldLength + 2000) / r.e.getReel().samplesPerBucket(), l, rr);
+    CHECK (l > 0.3f && rr > 0.3f, "the picture has the new splice: %f", l);
+
+    // A second new splice
+    r.p.recNewSplice = true;
+    r.run (2000, 500, negativeSound);
+    r.p.recNewSplice = false;
+    r.run (500, 500, silence);
+    CHECK (r.e.getReelView().numSplices == 4 && r.e.getReel().length() == oldLength + 6000, "a fourth splice");
+
+    // The new splice listens too: with Sound On Sound in the middle, the old splices are recorded into it
+    Rig s;
+    spliceRig (s, 6000);
+    press (s, s.p.splice);
+    s.p.recNewSplice = true;
+    s.run (3000, 500, silence);
+    s.p.recNewSplice = false;
+    s.run (500, 500, silence);
+    CHECK (maxAbs (std::vector<float> (12000 + 100, 0.0f)) == 0.0f, "(helper)");
+    float newest = 0.0f;
+    for (int i = 12100; i < 14900; ++i)
+        newest = std::max (newest, std::fabs (s.e.getReel().get (0, i)));
+    CHECK (newest > 0.09f, "what the tape plays during the recording goes into the new splice: %f", newest);
+}
+
+static void testRecordNewSplicePressesAndLimits()
+{
+    // Rec New Splice on an empty reel records the first take (and it becomes splice 1)
+    Rig a;
+    a.p.recNewSplice = true;
+    a.run (6000, 500, tone);
+    a.p.recNewSplice = false;
+    a.run (500, 500, silence);
+    CHECK (a.e.getReel().length() == 6000 && a.e.getReelView().numSplices == 1, "first take through Rec New Splice");
+    CHECK (! a.e.getReelView().recording, "stopped");
+
+    // Pressing Rec while a new splice is recording stops it, and both switches are handed back
+    Rig b;
+    b.recordFirstTake (12000, 500, tone);
+    b.p.recNewSplice = true;
+    b.run (3000, 500, tone);
+    b.p.rec = true;
+    b.run (500, 500, tone);
+    CHECK (! b.e.getReelView().recording && b.e.getReelView().numSplices == 2, "Rec stops a new-splice recording");
+    CHECK (b.e.takeRecordStopped() && b.e.takeNewSpliceStopped(), "both switches are handed back");
+    b.p.rec = false;
+    b.p.recNewSplice = false;
+    b.run (500, 500, tone);
+    CHECK (! b.e.getReelView().recording, "switching them off starts nothing");
+
+    // Rec New Splice while Rec is recording is refused
+    Rig c;
+    c.recordFirstTake (12000, 500, tone);
+    c.p.rec = true;
+    c.run (1000, 500, tone);
+    c.p.recNewSplice = true;
+    c.run (500, 500, tone);
+    CHECK (c.e.takeNewSpliceStopped(), "refused: the wrapper is told to switch it off");
+    CHECK (c.e.getReelView().recording && c.e.getReelView().numSplices == 1, "Rec carries on, no new splice");
+    c.p.recNewSplice = false;
+    c.run (500, 500, tone);
+    CHECK (c.e.getReelView().recording, "switching the refused button off does not stop Rec");
+
+    // Too short to be a splice: thrown away, the reel stays as it was
+    Rig d;
+    d.recordFirstTake (12000, 500, tone);
+    d.p.recNewSplice = true;
+    d.run (32, 32, tone);
+    d.p.recNewSplice = false;
+    d.run (500, 500, silence);
+    CHECK (d.e.getReel().length() == 12000 && d.e.getReelView().numSplices == 1 && d.e.getReelView().selectedSplice == 0, "a take under 64 samples is discarded");
+
+    // Clear Reel while recording a new splice
+    Rig e;
+    e.recordFirstTake (12000, 500, tone);
+    e.p.recNewSplice = true;
+    e.run (2000, 500, tone);
+    e.p.clearReel = true;
+    e.run (500, 500, tone);
+    CHECK (e.e.getReelView().lengthSamples == 0 && ! e.e.getReelView().recording, "Clear Reel cancels it");
+    CHECK (e.e.takeNewSpliceStopped() && ! e.e.takeRecordStopped(), "the wrapper switches the right button off");
+
+    // The reel becomes full while recording a new splice: the splice ends there by itself
+    const double sr = 8000.0;
+    Rig f (sr);
+    const int capacity = f.e.getReelView().capacitySamples;
+    f.recordFirstTake (12000, 500, tone);
+    f.p.recNewSplice = true;
+    f.run (capacity + 20000, 4000, tone);
+    CHECK (f.e.getReel().length() == capacity, "the reel is full: %d", f.e.getReel().length());
+    CHECK (f.e.getReelView().numSplices == 2 && f.e.getReelView().selectedSplice == 1 && ! f.e.getReelView().recording, "a second splice, selected, recording stopped");
+    CHECK (f.e.takeNewSpliceStopped() && ! f.e.takeRecordStopped(), "the wrapper is told");
+    f.p.recNewSplice = false;
+    f.run (4000, 4000, tone);
+    f.p.recNewSplice = true;
+    f.run (4000, 4000, tone);
+    CHECK (! f.e.getReelView().recording && f.e.takeNewSpliceStopped(), "no room for another splice: refused");
+}
+
+static void testClearReelAndRateChangeKeepMarkersRight()
+{
+    Rig r;
+    threeSplices (r);
+    r.p.organize = 0.9f;
+    r.run (100, 100, silence);
+    r.p.clearReel = true;
+    r.run (500, 500, silence);
+    CHECK (r.e.getReelView().numSplices == 1 && r.e.getReelView().selectedSplice == 0 && markersOf (r.e).empty(), "Clear Reel takes the markers away");
+    r.p.clearReel = false;
+    r.run (500, 500, silence);
+    r.recordFirstTake (12000, 500, twoHalves);
+    CHECK (r.e.getReelView().numSplices == 1, "a new first take is one splice");
+
+    // Changing the sample rate converts the reel and moves the markers with it
+    Rig q;
+    threeSplices (q);
+    q.e.prepare (96000.0, 4096, 2);
+    q.run (1000, 500, silence);
+    CHECK (q.e.getReel().length() == 24000, "reel doubled: %d", q.e.getReel().length());
+    CHECK (markersOf (q.e) == (std::vector<int> { 4000, 12000 }), "markers doubled too");
+    q.e.prepare (96000.0, 4096, 2);
+    CHECK (markersOf (q.e) == (std::vector<int> { 4000, 12000 }), "preparing again at the same rate changes nothing");
+}
+
+static void testSplicesStayFiniteAndConsistent()
+{
+    Rig r (44100.0);
+    uint32_t seed = 12345u;
+    auto rnd = [&seed] { seed = seed * 1664525u + 1013904223u; return (float) (seed >> 8) / 16777216.0f; };
+    bool finite = true, consistent = true;
+    for (int blockNumber = 0; blockNumber < 2500; ++blockNumber)
+    {
+        r.p.organize = rnd();   r.p.geneSize = rnd() * rnd();   r.p.slide = rnd();   r.p.variSpeed = rnd();   r.p.morph = rnd();
+        r.p.rec = rnd() > 0.93f;   r.p.recNewSplice = rnd() > 0.9f;   r.p.play = rnd() > 0.15f;
+        r.p.splice = rnd() > 0.55f;   r.p.shift = rnd() > 0.7f;   r.p.deleteMarker = rnd() > 0.93f;   r.p.deleteAllMarkers = rnd() > 0.985f;
+        r.p.clearReel = rnd() > 0.995f;
+        r.p.soundOnSound = rnd();
+        const auto out = r.run (200 + (int) (rnd() * 300.0f), 100, tone);
+        for (int c = 0; c < 2; ++c)
+            for (float v : out[(size_t) c])
+                if (! std::isfinite (v) || std::fabs (v) > 100.0f)
+                    finite = false;
+
+        const auto view = r.e.getReelView();
+        const auto marks = markersOf (r.e);
+        const int length = r.e.getReel().length();
+        int previous = 0;
+        for (int m : marks)
+        {
+            if (m - previous < phe::core::kMinSpliceSamples || length - m < phe::core::kMinSpliceSamples)
+                consistent = false;
+            previous = m;
+        }
+        if (view.numSplices != (int) marks.size() + 1 || view.numSplices > phe::core::kMaxSplices) consistent = false;
+        if (view.selectedSplice < 0 || view.selectedSplice >= view.numSplices) consistent = false;
+        if (view.playingSplice < 0 || view.playingSplice >= view.numSplices) consistent = false;
+        if (length < 0 || length > view.capacitySamples) consistent = false;
+        if (length == 0 && ! marks.empty()) consistent = false;
+    }
+    CHECK (finite, "random splice work never makes bad sound");
+    CHECK (consistent, "the markers always stay valid");
+}
+
+static void testSpliceBlockSizeIndependence()
+{
+    // The same actions at the same moments (multiples of 256 samples) give the same sound whatever the block size.
+    auto scenario = [] (int block)
+    {
+        Rig r;
+        std::vector<float> all;
+        auto add = [&all] (const Channels& c) { all.insert (all.end(), c[0].begin(), c[0].end()); all.insert (all.end(), c[1].begin(), c[1].end()); };
+        r.p.rec = true;       add (r.run (12288, block, twoHalves));
+        r.p.rec = false;      add (r.run (2048, block, silence));
+        r.p.splice = true;    add (r.run (256, block, silence));
+        r.p.splice = false;   add (r.run (6144, block, silence));
+        r.p.splice = true;    add (r.run (256, block, silence));
+        r.p.splice = false;   add (r.run (4096, block, silence));
+        r.p.shift = true;     add (r.run (256, block, silence));
+        r.p.shift = false;    add (r.run (12288, block, silence));
+        r.p.soundOnSound = 0.0f;
+        r.p.recNewSplice = true;  add (r.run (3072, block, negativeSound));
+        r.p.recNewSplice = false; add (r.run (4096, block, silence));
+        r.p.organize = 0.2f;  add (r.run (16384, block, silence));
+        r.p.deleteMarker = true;  add (r.run (256, block, silence));
+        r.p.deleteMarker = false; add (r.run (8192, block, silence));
+        return all;
+    };
+    const auto reference = scenario (256);
+    CHECK (scenario (64) == reference, "block size 64 gives the same sound as 256");
+    CHECK (scenario (128) == reference, "block size 128 gives the same sound as 256");
+    CHECK (scenario (32) == reference, "block size 32 gives the same sound as 256");
+}
+
+
 int main()
 {
     testPassThroughWhenEmpty();
@@ -1572,6 +2146,17 @@ int main()
     testMorphLevelAndPanning();
     testMorphPitchUpAndPitchScale();
     testMorphPlayOffStoppedAndRecording();
+    testSpliceMapAndSelector();
+    testSpliceDropsMarkerAtHead();
+    testSelectedSplicePlaysAndWaits();
+    testOrganizeAndShiftInEngine();
+    testDeleteMarkers();
+    testRecordOverStaysInItsSplice();
+    testRecordNewSplice();
+    testRecordNewSplicePressesAndLimits();
+    testClearReelAndRateChangeKeepMarkersRight();
+    testSplicesStayFiniteAndConsistent();
+    testSpliceBlockSizeIndependence();
     testEdgeCases();
     testGainSteps();
     testScales();
