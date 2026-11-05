@@ -4,11 +4,11 @@ An original AU / VST3 effect for Logic Pro, inspired by the feel of a Eurorack g
 Make Noise Morphagene). All DSP is our own code; it is not a port or copy of anything, and it is not affiliated
 with Make Noise.
 
-Status: **milestone 8 (Erase Splice, Undo, Time Lag polish, option menus): built and checked automatically; not yet tested in Logic.**
-Milestones 1 to 7 (mockup, empty build, styled panel, reel / Rec / Sound On Sound / playback, tape head and genes, Morph and
-Pitch Scale, splices) were tested in Logic on both Macs and work.
+Status: **milestone 8 (Erase Splice, Undo, Time Lag polish, option menus): tested in Logic on both Macs, works.**
+Milestones 1 to 8 (mockup, empty build, styled panel, reel / Rec / Sound On Sound / playback, tape head and genes, Morph and
+Pitch Scale, splices, Erase Splice / Undo / option menus) were tested in Logic on both Macs and work.
 
-Version 0.8.0 (milestone 8, **not yet tested in Logic**). Same styled panel and the same 21 control ids as 0.7.0, plus six
+Version 0.8.0 (milestone 8, tested, works). Same styled panel and the same 21 control ids as 0.7.0, plus six
 new menu ids at the end (27 in all). Everything from 0.7.0 works as before while the new menus are left on their first choice.
 
 - **ERASE SPLICE** (button): cuts the selected splice out of the reel and closes the gap (the audio after it moves up, the
@@ -38,8 +38,7 @@ What has been checked automatically (before any test in Logic): the engine self-
 plus the undo store, erasing in every position and on a long reel in small steps at several block sizes, Undo / Redo of every
 kind of edit and exact restoring of audio and markers, the limiter, each option menu, and long random sequences of every
 button), also run under a memory-error checker with no errors; the preview tool (draws the windows, moves every control,
-drives the real plugin code with audio); and the GitHub build. Not yet tested: anything in Logic (M4 Mac mini, macOS Tahoe,
-Logic 11.2.2; Intel Mac, macOS 12.7.8, Logic 10.7.8).
+drives the real plugin code with audio); and the GitHub build. Tested in Logic on the M4 Mac mini (macOS Tahoe, Logic 11.2.2) and the Intel Mac (macOS 12.7.8, Logic 10.7.8).
 
 Version 0.7.0 (milestone 7, tested, works): splices (Splice, Shift, Organize, Delete Splice Marker, Delete All Markers, Rec New
 Splice, and recording over a splice staying inside it). Earlier versions: 0.6.0 Morph and Pitch Scale (tested, works); 0.5.0 tape head, genes, Vari-Speed, Pitch Snap (tested, works);
