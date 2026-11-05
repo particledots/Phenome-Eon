@@ -18,8 +18,8 @@ namespace
     constexpr int kButtonX = 800, kButtonWidth = 370, kButtonHeight = 40, kButtonGap = 8;
 }
 
-PhenomeEonSliderPanel::PhenomeEonSliderPanel (juce::AudioProcessorValueTreeState& s)
-    : state (s)
+PhenomeEonSliderPanel::PhenomeEonSliderPanel (juce::AudioProcessorValueTreeState& s, ReelFileActions* actions)
+    : state (s), fileActions (actions)
 {
     // The eight knobs, in panel order.
     addSlider (PheParams::inputLevel,   "Input Level");
@@ -59,7 +59,40 @@ PhenomeEonSliderPanel::PhenomeEonSliderPanel (juce::AudioProcessorValueTreeState
     styledPanelButton.onClick = [this] { if (onSwitchToStyled) onSwitchToStyled(); };
     addAndMakeVisible (styledPanelButton);
 
+    for (auto* b : { &loadButton, &saveButton, &folderButton })
+    {
+        b->setEnabled (fileActions != nullptr);
+        addAndMakeVisible (*b);
+    }
+    loadButton.onClick   = [this] { if (fileActions != nullptr) fileActions->load(); };
+    saveButton.onClick   = [this] { if (fileActions != nullptr) fileActions->save(); };
+    folderButton.onClick = [this] { if (fileActions != nullptr) fileActions->chooseFolder(); };
+
+    statusLabel.setFont (font (13.0f));
+    statusLabel.setColour (juce::Label::textColourId, kMuted);
+    statusLabel.setMinimumHorizontalScale (1.0f);
+    addAndMakeVisible (statusLabel);
+
     setSize (kWidth, kHeight);
+    timerCallback();
+    startTimerHz (10);
+}
+
+PhenomeEonSliderPanel::~PhenomeEonSliderPanel()
+{
+    stopTimer();
+}
+
+void PhenomeEonSliderPanel::timerCallback()
+{
+    if (fileActions == nullptr)
+        return;
+    const auto text = fileActions->statusText();
+    const auto folder = fileActions->folderText(60);
+    const juce::String shown = text.isNotEmpty() ? text : "reel folder: " + folder;
+    if (statusLabel.getText() != shown)
+        statusLabel.setText (shown, juce::dontSendNotification);
+    statusLabel.setColour (juce::Label::textColourId, fileActions->statusIsProblem() ? kAmber : kMuted);
 }
 
 void PhenomeEonSliderPanel::addSlider (const char* id, const char* text)
@@ -118,8 +151,7 @@ void PhenomeEonSliderPanel::paint (juce::Graphics& g)
 
     g.setColour (kMuted);
     g.setFont (font (13.0f));
-    g.drawText ("Plain slider window (the fallback). The Load / Save WAV and Reel folder buttons come in a later milestone.",
-                kLeft, 46, kWidth - 2 * kLeft, 20, juce::Justification::centredLeft);
+    g.drawText ("Plain slider window (the fallback)", kLeft, 46, 330, 20, juce::Justification::centredLeft);
 
     g.setColour (kAmber);
     g.setFont (font (12.0f, true));
@@ -146,6 +178,10 @@ void PhenomeEonSliderPanel::resized()
     }
 
     styledPanelButton.setBounds (kWidth - kLeft - 150, 14, 150, 30);
+    loadButton.setBounds (kLeft + 400, 14, 100, 30);
+    saveButton.setBounds (kLeft + 510, 14, 100, 30);
+    folderButton.setBounds (kLeft + 620, 14, 110, 30);
+    statusLabel.setBounds (kLeft + 340, 46, kWidth - 2 * kLeft - 340, 20);
 
     // Two groups of buttons: the five main ones, then the five that delete or undo.
     int by = kFirstRowY;
@@ -204,13 +240,14 @@ void PhenomeEonEditor::showView (View view)
     if (view == View::styled)
     {
         styled = std::make_unique<StyledPanel> (owner.getValueTreeState(), owner, owner.getEngine(), JucePlugin_VersionString);
+        styled->setFileActions (&fileActions);
         styled->setLookAndFeel (&styledLook);
         styled->onSwitchToPlain = [this] { requestView (View::plain); };
         addAndMakeVisible (*styled);
     }
     else
     {
-        plain = std::make_unique<PhenomeEonSliderPanel> (owner.getValueTreeState());
+        plain = std::make_unique<PhenomeEonSliderPanel> (owner.getValueTreeState(), &fileActions);
         plain->setLookAndFeel (&plainLook);
         plain->onSwitchToStyled = [this] { requestView (View::styled); };
         addAndMakeVisible (*plain);

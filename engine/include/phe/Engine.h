@@ -35,6 +35,7 @@
 #include "GenePlayer.h"
 #include "Params.h"
 #include "Reel.h"
+#include "core/ReelFile.h"
 #include "core/SpliceMap.h"
 #include "core/UndoStore.h"
 
@@ -105,6 +106,34 @@ namespace phe
                              kButtonErase = 16, kButtonUndo = 32;
         int takeHandledButtons() { return handledButtons.exchange (0); }
 
+        // ---- reel files (milestone 9) ----
+        // Getting a whole reel out of (or into) the engine is done in small steps by the audio thread, a few thousand samples per
+        // block, so Logic never stalls. The calls below are made from the window / main thread (one caller at a time). They only
+        // make progress while Logic is processing audio; a request simply waits until then.
+        using ReelAudio = core::ReelAudio;
+        enum class IoResult { none, done, rejected, empty };
+
+        double reelSampleRate() const { return reel.sampleRate(); }      // 0 until the engine has been prepared
+        int reelCapacity() const { return reel.capacity(); }
+        int reelLength() const { return reel.length(); }
+
+        // A number that goes up whenever the audio or the splice markers of the reel are changed (a recording, a marker added or
+        // removed, Erase Splice, Clear Reel, Undo / Redo, a file loaded). Choosing a splice does not change it. The file code
+        // compares it with the value it noted when it saved or loaded, to tell whether the reel was edited since.
+        uint32_t editStamp() const { return editCount.load (std::memory_order_relaxed); }
+
+        // Saving: asks for a copy of the reel (audio and markers). False if a copy is already being made.
+        // pollExport() then says none (not yet), done (the copy is in 'out' and 'stamp' is the editStamp it was taken at),
+        // empty (the reel was empty) or rejected (the reel grew meanwhile or the sample rate changed: ask again).
+        bool requestExport();
+        IoResult pollExport (ReelAudio& out, uint32_t& stamp);
+
+        // Loading: hands the engine a whole reel (already at the engine's sample rate, at most reelCapacity() long, markers tidy).
+        // It is written in small steps and replaces the reel as ONE undoable edit. False (with a sentence) if refused straight away.
+        // pollImport() says none (not yet), done ('stamp' = the editStamp just after the load) or rejected (try again).
+        bool submitImport (ReelAudio&& audio, std::string& whyNot);
+        IoResult pollImport (uint32_t& stamp);
+
     private:
         void startRecording();
         void stopRecording();
@@ -132,6 +161,11 @@ namespace phe
         void finishJobNow();
         void abandonJob();
         bool playOn() const { return params.play || params.playMode == 2; }     // trigger loop always plays
+
+        // Reel files (milestone 9)
+        void bumpEdit() { editCount.fetch_add (1, std::memory_order_relaxed); }
+        void startExportJob();
+        void startImportJob();
 
         Params params;
         Reel reel;
@@ -167,7 +201,7 @@ namespace phe
         int recSavedChunk = -1;          // the chunk the record head last saved for undo (so most samples need no check)
         struct Job
         {
-            enum class Kind { none, eraseMove, swapBack };
+            enum class Kind { none, eraseMove, swapBack, exportCopy, importWrite };
             enum class Phase { audio, peaks };
             Kind kind = Kind::none;
             Phase phase = Phase::audio;
@@ -177,6 +211,16 @@ namespace phe
             int peakFrom = 0, peakTo = 0, peakCursor = 0;                         // waveform slices to redraw (in samples)
         } job;
         bool busy = false;
+
+        // Reel files: the two hand-over slots between the window thread and the audio thread.
+        // exportState: 0 idle, 5 the window thread is preparing, 1 requested, 2 being copied, 3 done, 4 reel empty, 6 rejected.
+        // importState: 0 idle, 5 the window thread is preparing, 1 submitted, 2 being written, 3 done, 4 rejected.
+        // The audio thread only touches a slot's data while its state says it owns it (acquire / release on the state).
+        std::atomic<int> exportState { 0 }, importState { 0 };
+        ReelAudio exportAudio, importAudio;
+        int exportMarkerCount = 0, exportLength = 0;
+        uint32_t exportStamp = 0, importStamp = 0;
+        std::atomic<uint32_t> editCount { 0 };
 
         // Smoothed control values
         float gainIn = 1.0f, gainOut = 1.0f, sos = 0.5f;

@@ -1,4 +1,5 @@
 #include "StyledPanel.h"
+#include "ReelFileActions.h"
 #include <phe/core/Gain.h>
 #include <phe/core/Morph.h>
 #include <phe/core/SpliceMap.h>
@@ -768,7 +769,7 @@ StyledPanel::StyledPanel (juce::AudioProcessorValueTreeState& s, juce::AudioProc
     addPanelButton (PheParams::clearReel,        "CLEAR REEL");
     addPanelButton (PheParams::undo,             "UNDO");
 
-    // ---- reel file buttons (not usable until milestone 9) ----
+    // ---- reel file buttons (greyed out until setFileActions gives them something to do) ----
     for (auto* b : { &loadWav, &saveWav, &reelFolder })
     {
         b->setEnabled (false);
@@ -786,6 +787,17 @@ StyledPanel::StyledPanel (juce::AudioProcessorValueTreeState& s, juce::AudioProc
 
     timerCallback();
     startTimerHz (20);
+}
+
+void StyledPanel::setFileActions (ReelFileActions* a)
+{
+    fileActions = a;
+    for (auto* b : { &loadWav, &saveWav, &reelFolder })
+        b->setEnabled (a != nullptr);
+    loadWav.onClick = [this] { if (fileActions != nullptr) fileActions->load(); };
+    saveWav.onClick = [this] { if (fileActions != nullptr) fileActions->save(); };
+    reelFolder.onClick = [this] { if (fileActions != nullptr) fileActions->chooseFolder(); };
+    timerCallback();
 }
 
 StyledPanel::~StyledPanel()
@@ -838,6 +850,20 @@ void StyledPanel::showOptions (bool shouldShow)
 
 void StyledPanel::timerCallback()
 {
+    if (fileActions != nullptr)
+    {
+        const auto folder = fileActions->folderText (21);
+        const auto status = fileActions->statusText();
+        const bool problem = fileActions->statusIsProblem();
+        if (folder != shownFolder || status != shownStatus || problem != shownProblem)
+        {
+            shownFolder = folder;
+            shownStatus = status;
+            shownProblem = problem;
+            repaint();
+        }
+    }
+
     const double rate = host.getSampleRate();
     const int channels = host.getTotalNumInputChannels();
     if (rate != shownRate || channels != shownChannels)
@@ -904,9 +930,10 @@ void StyledPanel::paint (juce::Graphics& g)
     g.setFont (sans (14.5f, false, 0.10f));
     g.drawText ("REEL FILE", juce::Rectangle<int> (kReelFileBox.getX() + 14, kReelFileBox.getY(), 90, kReelFileBox.getHeight()),
                 juce::Justification::centredLeft, false);
-    g.setFont (mono (15.0f));
-    g.drawText ("not active yet", juce::Rectangle<int> (750, kReelFileBox.getY(), 145, kReelFileBox.getHeight()),
-                juce::Justification::centredLeft, false);
+    g.setFont (mono (13.0f));
+    g.drawText (fileActions != nullptr ? shownFolder : juce::String ("not active"),
+                juce::Rectangle<int> (750, kReelFileBox.getY(), 145, kReelFileBox.getHeight()),
+                juce::Justification::centredLeft, true);
 
     // Clock box (space kept for the optional clock features, milestone 10)
     {
@@ -934,8 +961,17 @@ void StyledPanel::paint (juce::Graphics& g)
 
     // Footer
     g.setFont (mono (14.0f));
-    g.drawText ("PhenomeEon v" + versionText + "  -  the Load / Save WAV and Reel folder buttons do not work yet",
-                juce::Rectangle<int> (kMargin, 757, 900, 28), juce::Justification::centredLeft, false);
+    const juce::String versionLine = "PhenomeEon v" + versionText;
+    const int versionWidth = 14 + (int) std::ceil (8.5 * versionLine.length());
+    g.drawText (versionLine, juce::Rectangle<int> (kMargin, 757, versionWidth, 28), juce::Justification::centredLeft, false);
+    if (shownStatus.isNotEmpty())
+    {
+        // The sentence about the reel file, up to the Options button.
+        const int x = kMargin + versionWidth;
+        g.setColour (shownProblem ? juce::Colour (0xffe8a33d) : muted);
+        g.drawText (shownStatus, juce::Rectangle<int> (x, 757, juce::jmax (100, optionsButton.getX() - 12 - x), 28),
+                    juce::Justification::centredLeft, true);
+    }
 }
 
 void StyledPanel::resized()

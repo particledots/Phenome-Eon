@@ -3,12 +3,54 @@
 #include <cmath>
 #include <phe/core/Morph.h>
 
+namespace
+{
+    // Remembered per computer (not per project): the reel folder, where saved reels go and where moved files are looked for.
+    std::unique_ptr<juce::PropertiesFile> openSettings()
+    {
+        juce::PropertiesFile::Options o;
+        o.applicationName = "PhenomeEon";
+        o.folderName = "particledots";
+        o.filenameSuffix = ".settings";
+        o.osxLibrarySubFolder = "Application Support";
+        o.storageFormat = juce::PropertiesFile::storeAsXML;
+        return std::make_unique<juce::PropertiesFile> (o);
+    }
+
+    juce::File defaultReelFolder()
+    {
+        return juce::File::getSpecialLocation (juce::File::userMusicDirectory).getChildFile ("PhenomeEon");
+    }
+}
+
+juce::File PhenomeEonProcessor::getReelFolder() const
+{
+    if (auto s = openSettings())
+    {
+        const auto v = s->getValue ("reelFolder");
+        if (v.isNotEmpty())
+            return juce::File (v);
+    }
+    return defaultReelFolder();
+}
+
+void PhenomeEonProcessor::setReelFolder (const juce::File& folder)
+{
+    if (auto s = openSettings())
+    {
+        s->setValue ("reelFolder", folder.getFullPathName());
+        s->saveIfNeeded();
+    }
+    library.setHomeFolder (folder.getFullPathName().toStdString());
+}
+
 PhenomeEonProcessor::PhenomeEonProcessor()
     : AudioProcessor (BusesProperties()
                           .withInput  ("Input",  juce::AudioChannelSet::stereo(), true)
                           .withOutput ("Output", juce::AudioChannelSet::stereo(), true)),
       apvts (*this, nullptr, "Parameters", PheParams::createLayout())
 {
+    library.setHomeFolder (getReelFolder().getFullPathName().toStdString());
     startTimerHz (20);
 }
 
@@ -32,6 +74,8 @@ void PhenomeEonProcessor::switchOff (const char* parameterId)
 
 void PhenomeEonProcessor::timerCallback()
 {
+    library.tick();
+
     if (engine.takeRecordStopped())
         switchOff (PheParams::rec);
 
@@ -143,7 +187,19 @@ juce::AudioProcessorEditor* PhenomeEonProcessor::createEditor()
 void PhenomeEonProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
     if (auto xml = apvts.copyState().createXml())
+    {
+        // The reel's file (not its audio): where it is (relative to the reel folder when inside it), its size and its fingerprint,
+        // so it can be found again if it was moved.
+        if (library.hasBinding())
+        {
+            const auto b = library.binding();
+            auto* node = xml->createNewChildElement ("REELFILE");
+            node->setAttribute ("path", juce::String::fromUTF8 (b.path.c_str()));
+            node->setAttribute ("size", juce::String ((juce::int64) b.size));
+            node->setAttribute ("hash", juce::String::toHexString ((juce::int64) b.hash));
+        }
         copyXmlToBinary (*xml, destData);
+    }
 }
 
 void PhenomeEonProcessor::setStateInformation (const void* data, int sizeInBytes)
@@ -151,6 +207,18 @@ void PhenomeEonProcessor::setStateInformation (const void* data, int sizeInBytes
     if (auto xml = getXmlFromBinary (data, sizeInBytes))
         if (xml->hasTagName (apvts.state.getType()))
         {
+            phe::ReelLibrary::Binding b;
+            bool hasFile = false;
+            if (auto* node = xml->getChildByName ("REELFILE"))        // absent when the reel was never saved to a file
+            {
+                b.path = node->getStringAttribute ("path").toStdString();
+                b.size = (uint64_t) node->getStringAttribute ("size").getLargeIntValue();
+                b.hash = (uint64_t) node->getStringAttribute ("hash").getHexValue64();
+                hasFile = ! b.path.empty();
+                xml->removeChildElement (node, true);
+            }
+            library.restore (hasFile, b);
+
             apvts.replaceState (juce::ValueTree::fromXml (*xml));
             switchTransientButtonsOff.store (true);
         }

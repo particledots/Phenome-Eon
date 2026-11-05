@@ -41,6 +41,8 @@ target_sources(PhenomeEon PRIVATE
     Source/PanelLookAndFeel.cpp
     Source/StyledPanel.h
     Source/StyledPanel.cpp
+    Source/ReelFileActions.h
+    Source/ReelFileActions.cpp
 )
 
 target_compile_definitions(PhenomeEon PUBLIC
@@ -72,6 +74,7 @@ if(PHE_BUILD_PREVIEW)
         Source/PluginEditor.cpp
         Source/PanelLookAndFeel.cpp
         Source/StyledPanel.cpp
+        Source/ReelFileActions.cpp
     )
     target_include_directories(PhenomeEonPreview PRIVATE Source)
     target_compile_definitions(PhenomeEonPreview PRIVATE

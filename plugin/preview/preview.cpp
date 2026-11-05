@@ -10,6 +10,7 @@
 #include <juce_gui_basics/juce_gui_basics.h>
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
+#include "ReelFileActions.h"
 
 #include <cmath>
 #include <iostream>
@@ -791,6 +792,167 @@ int main (int argc, char** argv)
         editor.showView (PhenomeEonEditor::View::plain);
         editor.setSize (1200, 800);
         save (editor, outDir.getChildFile ("plain_sliders.png"), 1.0f);
+    }
+
+
+    // ---------------- reel files and project links (milestone 9) ----------------
+    {
+        const juce::File work = outDir.getChildFile ("reelfile_check");
+        work.deleteRecursively();
+        work.createDirectory();
+
+        PhenomeEonProcessor a;
+        a.setPlayConfigDetails (2, 2, 48000.0, 512);
+        a.prepareToPlay (48000.0, 512);
+        a.setReelFolder (work.getChildFile ("Reels"));
+        expect (a.getReelFolder() == work.getChildFile ("Reels"), "reel folder is remembered");
+
+        // Both windows: the three file buttons are live and show the reel folder / a status sentence.
+        {
+            PhenomeEonEditor editor (a);
+            editor.setSize (1200, 800);
+            letWindowThreadRun (100);
+            for (auto view : { PhenomeEonEditor::View::styled, PhenomeEonEditor::View::plain })
+            {
+                editor.showView (view);
+                letWindowThreadRun (100);
+                std::vector<juce::TextButton*> buttons;
+                collect (editor, buttons);
+                int found = 0;
+                for (auto* b : buttons)
+                    if (b->getButtonText() == "Load WAV" || b->getButtonText() == "Save WAV" || b->getButtonText() == "Reel folder")
+                    {
+                        ++found;
+                        expect (b->isEnabled() && b->isVisible(), "file button '" + b->getButtonText() + "' is live in the " + (view == PhenomeEonEditor::View::styled ? "styled" : "plain") + " window");
+                    }
+                expect (found == 3, "three file buttons in the window (" + juce::String (found) + ")");
+            }
+            editor.showView (PhenomeEonEditor::View::styled);
+        }
+
+        // Nothing recorded: nothing to say, nothing to save.
+        {
+            ReelFileActions actions (a);
+            expect (actions.statusText().isEmpty(), "empty reel: no status sentence");
+            std::string why;
+            expect (! a.getReelLibrary().saveReel (work.getChildFile ("Reels/none.wav").getFullPathName().toStdString(), why), "an empty reel cannot be saved");
+        }
+
+        // Record, put in a marker, and look at the sentence.
+        long long clock = 0;
+        feed (a, clock, 4);
+        setParameter (a, PheParams::rec, 1.0f);
+        feed (a, clock, 300);
+        setParameter (a, PheParams::rec, 0.0f);
+        feed (a, clock, 4);
+        feed (a, clock, 40);
+        setParameter (a, PheParams::splice, 1.0f);
+        feed (a, clock, 3);
+        letWindowThreadRun (150);
+        expect (a.getEngine().getReelView().numSplices == 2, "a marker was set (" + juce::String (a.getEngine().getReelView().numSplices) + " splices)");
+        ReelFileActions actions (a);
+        expect (actions.statusText().contains ("not saved to a file yet"), "unsaved reel says so: " + actions.statusText());
+
+        // Save, pumping audio and the 20 Hz tick the way Logic and the window thread would.
+        const juce::File file = work.getChildFile ("Reels/take.wav");
+        std::string why;
+        expect (a.getReelLibrary().saveReel (file.getFullPathName().toStdString(), why), "save accepted: " + juce::String (why));
+        for (int i = 0; i < 400 && a.getReelLibrary().busy(); ++i)
+        {
+            feed (a, clock, 1);
+            a.getReelLibrary().tick();
+        }
+        expect (file.existsAsFile() && ! a.getReelLibrary().busy(), "the file was written");
+        expect (actions.statusText().startsWith ("saved take.wav"), "status after saving: " + actions.statusText());
+        expect (! actions.statusIsProblem(), "saved is not a problem");
+        const int savedLength = a.getEngine().getReelView().lengthSamples;
+
+        // The project stores a link, not audio.
+        juce::MemoryBlock project;
+        a.getStateInformation (project);
+        expect (project.getSize() < 8000, "the project holds no audio (" + juce::String ((int) project.getSize()) + " bytes)");
+        {
+            auto xml = juce::AudioProcessor::getXmlFromBinary (project.getData(), (int) project.getSize());
+            expect (xml != nullptr && xml->getChildByName ("REELFILE") != nullptr, "the project holds a REELFILE link");
+            if (xml != nullptr && xml->getChildByName ("REELFILE") != nullptr)
+                expect (xml->getChildByName ("REELFILE")->getStringAttribute ("path") == "take.wav", "stored relative to the reel folder");
+        }
+
+        // Editing says so.
+        setParameter (a, PheParams::splice, 0.0f);
+        feed (a, clock, 2);
+        setParameter (a, PheParams::splice, 1.0f);
+        feed (a, clock, 3);
+        a.getReelLibrary().tick();
+        letWindowThreadRun (100);
+        expect (actions.statusText().startsWith ("edited since saved: take.wav"), "edited reel says so: " + actions.statusText());
+
+        // A new instance (opening the project) brings the reel back from the file.
+        {
+            PhenomeEonProcessor b;
+            b.setPlayConfigDetails (2, 2, 48000.0, 512);
+            b.setStateInformation (project.getData(), (int) project.getSize());
+            expect (b.getReelLibrary().hasBinding(), "the link is restored from the project");
+            b.prepareToPlay (48000.0, 512);
+            long long clock2 = 0;
+            for (int i = 0; i < 400 && b.getReelLibrary().busy(); ++i)
+            {
+                feed (b, clock2, 1, 0.0f);
+                b.getReelLibrary().tick();
+            }
+            expect (b.getEngine().getReelView().lengthSamples == savedLength, "the reel came back from the file (" + juce::String (b.getEngine().getReelView().lengthSamples) + " of " + juce::String (savedLength) + ")");
+            expect (b.getEngine().getReelView().numSplices == 2, "with its splice marker");
+            ReelFileActions actionsB (b);
+            expect (actionsB.statusText().startsWith ("loaded take.wav"), "status after opening: " + actionsB.statusText());
+
+            PhenomeEonEditor editor (b);
+            editor.showView (PhenomeEonEditor::View::styled);
+            editor.setSize (1200, 800);
+            letWindowThreadRun (150);
+            save (editor, outDir.getChildFile ("styled_reel_file_loaded.png"), 1654.0f / 1200.0f);
+        }
+
+        // The file is gone: the link is kept and the sentence is a problem.
+        {
+            file.deleteFile();
+            PhenomeEonProcessor c;
+            c.setPlayConfigDetails (2, 2, 48000.0, 512);
+            c.setStateInformation (project.getData(), (int) project.getSize());
+            c.prepareToPlay (48000.0, 512);
+            long long clock3 = 0;
+            for (int i = 0; i < 400 && c.getReelLibrary().busy(); ++i)
+            {
+                feed (c, clock3, 1, 0.0f);
+                c.getReelLibrary().tick();
+            }
+            ReelFileActions actionsC (c);
+            expect (actionsC.statusText().startsWith ("missing: take.wav") && actionsC.statusIsProblem(), "missing file is reported: " + actionsC.statusText());
+            juce::MemoryBlock again;
+            c.getStateInformation (again);
+            auto xml = juce::AudioProcessor::getXmlFromBinary (again.getData(), (int) again.getSize());
+            expect (xml != nullptr && xml->getChildByName ("REELFILE") != nullptr, "the link is kept in the project while the file is missing");
+
+            PhenomeEonEditor editor (c);
+            editor.showView (PhenomeEonEditor::View::styled);
+            editor.setSize (1200, 800);
+            letWindowThreadRun (150);
+            save (editor, outDir.getChildFile ("styled_reel_file_missing.png"), 1654.0f / 1200.0f);
+            editor.showView (PhenomeEonEditor::View::plain);
+            letWindowThreadRun (150);
+            save (editor, outDir.getChildFile ("plain_reel_file_missing.png"), 1.0f);
+        }
+
+        // An old project (no link) opens as before.
+        {
+            PhenomeEonProcessor d;
+            juce::MemoryBlock plainProject;
+            d.getStateInformation (plainProject);
+            expect (! d.getReelLibrary().hasBinding(), "a new plugin has no link");
+            PhenomeEonProcessor e;
+            e.setStateInformation (plainProject.getData(), (int) plainProject.getSize());
+            expect (! e.getReelLibrary().hasBinding(), "a project with no link opens with no link");
+        }
+        work.deleteRecursively();
     }
 
     std::cout << "preview checks: " << (checks - failures) << " passed, " << failures << " failed" << std::endl;

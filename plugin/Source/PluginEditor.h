@@ -10,6 +10,7 @@
 #include "PluginProcessor.h"
 #include "PanelLookAndFeel.h"
 #include "StyledPanel.h"
+#include "ReelFileActions.h"
 
 #include <functional>
 
@@ -17,14 +18,14 @@
 #include <vector>
 
 // Everything in the window, laid out in a fixed 900 x 600 space. The editor scales it to the window size.
-class PhenomeEonSliderPanel : public juce::Component
+class PhenomeEonSliderPanel : public juce::Component, private juce::Timer
 {
 public:
     static constexpr int kWidth  = 1200;
     static constexpr int kHeight = 800;
 
-    explicit PhenomeEonSliderPanel (juce::AudioProcessorValueTreeState&);
-    ~PhenomeEonSliderPanel() override = default;
+    explicit PhenomeEonSliderPanel (juce::AudioProcessorValueTreeState&, ReelFileActions* fileActions = nullptr);
+    ~PhenomeEonSliderPanel() override;
 
     void paint (juce::Graphics&) override;
     void resized() override;
@@ -56,6 +57,12 @@ private:
     std::vector<std::unique_ptr<ButtonItem>> buttons;
     juce::TextButton styledPanelButton { "Styled panel" };
 
+    // The reel file buttons and the sentence about the reel file (milestone 9).
+    void timerCallback() override;
+    ReelFileActions* fileActions = nullptr;
+    juce::TextButton loadButton { "Load WAV" }, saveButton { "Save WAV" }, folderButton { "Reel folder" };
+    juce::Label statusLabel;
+
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (PhenomeEonSliderPanel)
 };
 
@@ -80,6 +87,7 @@ private:
     void layOutPanel();
 
     PhenomeEonProcessor& owner;
+    ReelFileActions fileActions { owner };       // before the windows, which use it
     juce::LookAndFeel_V4 plainLook;        // declared before the panels, so they outlive them
     PanelLookAndFeel styledLook;
     std::unique_ptr<StyledPanel> styled;

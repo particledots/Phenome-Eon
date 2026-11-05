@@ -151,6 +151,8 @@ private:
 };
 
 //==============================================================================
+class ReelFileActions;
+
 class StyledPanel : public juce::Component, private juce::Timer
 {
 public:
@@ -173,6 +175,9 @@ public:
     const std::vector<juce::String>& controlledParameterIds() const { return controlIds; }
 
     ReelDisplay& getReelDisplay() { return reel; }
+
+    // Gives the Load WAV, Save WAV and Reel folder buttons something to do (milestone 9). Without it they stay greyed out.
+    void setFileActions (ReelFileActions*);
 
     // The Options sheet (open / close), also used by the automatic checks.
     void showOptions (bool shouldShow);
@@ -201,7 +206,7 @@ private:
     std::vector<std::unique_ptr<ChoiceItem>> choices;
     std::vector<std::unique_ptr<ButtonItem>> buttons;
 
-    // Reel file buttons: shown as in the mockup but not usable until milestone 9.
+    // Reel file buttons (usable once setFileActions has been called).
     juce::TextButton loadWav { "Load WAV" }, saveWav { "Save WAV" }, reelFolder { "Reel folder" };
     juce::TextButton plainSliders { "PLAIN SLIDERS" };
     juce::TextButton optionsButton { "OPTIONS" };
@@ -209,6 +214,10 @@ private:
     KnobCard* variCard = nullptr;
     int shownVariMode = -1;
     int shownUndoState = -1;
+
+    ReelFileActions* fileActions = nullptr;
+    juce::String shownFolder, shownStatus;
+    bool shownProblem = false;
 
     double shownRate = -1.0;
     int shownChannels = -1;

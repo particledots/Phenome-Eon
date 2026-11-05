@@ -122,6 +122,7 @@ void Engine::startRecording()
     recNew = false;
     peakBucket = -1;
     recSavedChunk = -1;
+    bumpEdit();                                     // the reel is about to change
 
     if (length <= 0)
     {
@@ -181,6 +182,7 @@ void Engine::finishFirstRecording()
 {
     flushPeak();
     peakBucket = -1;
+    bumpEdit();
 
     const int length = recPos;
     recActive = false;
@@ -211,6 +213,7 @@ void Engine::finishNewSplice()
 {
     flushPeak();
     peakBucket = -1;
+    bumpEdit();
 
     const int base = newSpliceBase;
     const int end = recPos;
@@ -262,7 +265,10 @@ void Engine::clearReel()
     player.stop();
     recPos = 0;
     if (before.length > 0)
+    {
         commitStep (before);                        // the audio itself is untouched, so Undo only has to bring back the length and markers
+        bumpEdit();
+    }
     clearHandled.store (true);
 }
 
@@ -282,6 +288,7 @@ void Engine::dropMarker()
     {
         selector.markerInserted (j);
         commitStep (before);
+        bumpEdit();
     }
 }
 
@@ -294,6 +301,7 @@ void Engine::deleteMarker()
     {
         selector.markerRemoved (k);
         commitStep (before);
+        bumpEdit();
     }
 }
 
@@ -306,6 +314,7 @@ void Engine::deleteAllMarkers()
     map.clear();
     selector.sync (params.organize, 1);
     commitStep (before);
+    bumpEdit();
 }
 
 //==============================================================================
@@ -388,6 +397,20 @@ bool Engine::runJobSlice (int budgetChunks)
     budgetChunks = std::max (1, std::min (budgetChunks, 4096));
     float* channels[2] = { reel.channel (0), reel.channel (1) };
 
+    // Saving: the reel is copied out a piece at a time (nothing is drawn or restarted afterwards).
+    if (job.kind == Job::Kind::exportCopy)
+    {
+        const int total = job.oldLength;
+        const int count = std::min (total - job.cursor, budgetChunks * core::UndoStore::kChunkFrames);
+        if (count > 0)
+        {
+            for (int c = 0; c < 2; ++c)
+                std::memcpy (exportAudio.ch[c].data() + job.cursor, channels[c] + job.cursor, (size_t) count * sizeof (float));
+            job.cursor += count;
+        }
+        return job.cursor >= total;
+    }
+
     if (job.phase == Job::Phase::audio)
     {
         if (job.kind == Job::Kind::eraseMove)
@@ -411,6 +434,30 @@ bool Engine::runJobSlice (int budgetChunks)
             selector.select (std::min (job.spliceIndex, map.numSplices() - 1));
             job.peakFrom = job.eraseStart;
             job.peakTo = job.oldLength;
+            bumpEdit();
+        }
+        else if (job.kind == Job::Kind::importWrite)
+        {
+            // Loading a reel file: the old audio is kept for Undo a piece at a time, just before it is written over.
+            const int total = (int) importAudio.frames();
+            const int count = std::min (total - job.cursor, budgetChunks * core::UndoStore::kChunkFrames);
+            if (count > 0)
+            {
+                undo.saveRange (channels, job.cursor, job.cursor + count);
+                for (int c = 0; c < 2; ++c)
+                    std::memcpy (channels[c] + job.cursor, importAudio.ch[c].data() + job.cursor, (size_t) count * sizeof (float));
+                job.cursor += count;
+            }
+            if (job.cursor < total)
+                return false;
+
+            const int oldLength = reel.length();
+            reel.setLength (total);
+            map.setMarkers (importAudio.markers.data(), (int) importAudio.markers.size());
+            selector.sync (params.organize, map.numSplices());
+            job.peakFrom = 0;
+            job.peakTo = std::max (oldLength, total);
+            bumpEdit();
         }
         else if (job.kind == Job::Kind::swapBack)
         {
@@ -430,6 +477,7 @@ bool Engine::runJobSlice (int budgetChunks)
             const int firstChanged = undo.firstSaved() >= 0 ? undo.firstSaved() * core::UndoStore::kChunkFrames : currentLength;
             job.peakFrom = std::min (firstChanged, std::min (currentLength, job.target.length));
             job.peakTo = std::max (currentLength, job.target.length);
+            bumpEdit();
         }
         else
             return true;
@@ -454,9 +502,21 @@ bool Engine::runJobSlice (int budgetChunks)
 
 void Engine::finishJob()
 {
+    const Job::Kind kind = job.kind;
     job = Job();
     busy = false;
     viewBusy.store (false);
+
+    if (kind == Job::Kind::exportCopy)
+    {
+        exportState.store (3, std::memory_order_release);       // the copy is complete; playback was never interrupted
+        return;
+    }
+    if (kind == Job::Kind::importWrite)
+    {
+        importStamp = editStamp();
+        importState.store (3, std::memory_order_release);
+    }
     restartPlayback();              // plays from the start of the (now different) selected splice, if Play is on
 }
 
@@ -469,9 +529,14 @@ void Engine::finishJobNow()
 
 void Engine::abandonJob()
 {
+    const Job::Kind kind = job.kind;
     job = Job();
     busy = false;
     viewBusy.store (false);
+    if (kind == Job::Kind::exportCopy)
+        exportState.store (6, std::memory_order_release);
+    else if (kind == Job::Kind::importWrite)
+        importState.store (4, std::memory_order_release);
 }
 
 //==============================================================================
@@ -547,6 +612,15 @@ void Engine::process (float* const* channels, int numChannels, int numSamples)
     // A big edit in progress (Erase Splice, Undo, Redo) carries on a little each block; until it is done the reel is silent.
     if (busy && runJobSlice (kJobChunksPerBlock))
         finishJob();
+
+    // Saving or loading a reel file starts here, when nothing else is going on (never while recording or in the middle of an edit).
+    if (! busy && ! recActive)
+    {
+        if (exportState.load (std::memory_order_acquire) == 1)
+            startExportJob();
+        else if (importState.load (std::memory_order_acquire) == 1)
+            startImportJob();
+    }
 
     // ---- buttons: act when they go on ----
     const bool clearEdge     = params.clearReel && ! prevClear;
@@ -782,6 +856,7 @@ void Engine::process (float* const* channels, int numChannels, int numSamples)
                     recStopping = false;
                     flushPeak();
                     peakBucket = -1;
+                    bumpEdit();
                 }
             }
         }
@@ -837,6 +912,151 @@ void Engine::setPlayerTargets()
     t.smoothWindow = params.geneWindow == 1;
     t.chordMode = std::min (dsp::kNumMorphChords - 1, std::max (0, params.morphChord));
     player.setTargets (t);
+}
+
+//==============================================================================
+// Reel files (milestone 9)
+//
+// The window thread and the audio thread hand a whole reel to each other through two slots (exportAudio / importAudio). Each slot
+// has a state number; whoever the state says owns the slot is the only one that touches its data, and a change of owner is a
+// release / acquire pair, so the data is always complete when the other side sees it. The audio thread never allocates: the window
+// thread makes the lists the right size first, and the audio thread only copies into or out of them a piece at a time.
+
+bool Engine::requestExport()
+{
+    int expected = 0;
+    if (! exportState.compare_exchange_strong (expected, 5))
+        return false;                                   // a copy is already in progress (or waiting to be collected)
+
+    const int length = reel.length();
+    exportAudio = ReelAudio();
+    exportMarkerCount = 0;
+    exportLength = 0;
+    if (length > 0)
+    {
+        exportAudio.ch[0].assign ((size_t) length, 0.0f);
+        exportAudio.ch[1].assign ((size_t) length, 0.0f);
+        exportAudio.markers.assign ((size_t) core::kMaxSpliceMarkers, 0);
+    }
+    exportState.store (length > 0 ? 1 : 4, std::memory_order_release);
+    return true;
+}
+
+void Engine::startExportJob()
+{
+    const int length = reel.length();
+    if (length <= 0)
+    {
+        exportState.store (4, std::memory_order_release);
+        return;
+    }
+    if (exportAudio.ch[0].size() < (size_t) length || exportAudio.ch[1].size() < (size_t) length)
+    {
+        exportState.store (6, std::memory_order_release);      // the reel grew since it was asked for: ask again
+        return;
+    }
+
+    exportAudio.sampleRate = reel.sampleRate();
+    exportMarkerCount = map.snapshot (exportAudio.markers.data(), core::kMaxSpliceMarkers);
+    exportLength = length;
+    exportStamp = editStamp();
+
+    job = Job();
+    job.kind = Job::Kind::exportCopy;
+    job.oldLength = length;
+    busy = true;                                               // edit buttons are ignored while the copy is made; playback carries on
+    exportState.store (2, std::memory_order_relaxed);
+}
+
+Engine::IoResult Engine::pollExport (ReelAudio& out, uint32_t& stamp)
+{
+    const int state = exportState.load (std::memory_order_acquire);
+    if (state == 3)
+    {
+        exportAudio.ch[0].resize ((size_t) exportLength);
+        exportAudio.ch[1].resize ((size_t) exportLength);
+        exportAudio.markers.resize ((size_t) exportMarkerCount);
+        out = std::move (exportAudio);
+        exportAudio = ReelAudio();
+        stamp = exportStamp;
+        exportState.store (0, std::memory_order_release);
+        return IoResult::done;
+    }
+    if (state == 4 || state == 6)
+    {
+        exportAudio = ReelAudio();
+        exportState.store (0, std::memory_order_release);
+        return state == 4 ? IoResult::empty : IoResult::rejected;
+    }
+    return IoResult::none;
+}
+
+bool Engine::submitImport (ReelAudio&& audio, std::string& whyNot)
+{
+    if (reel.capacity() <= 0 || reel.sampleRate() <= 0.0)
+    {
+        whyNot = "Not ready: the reel has no memory yet.";
+        return false;
+    }
+    if (viewRecording.load())
+    {
+        whyNot = "A recording is running - stop it first.";
+        return false;
+    }
+    const size_t n = audio.frames();
+    if (n < (size_t) kMinFirstRecording || n > (size_t) reel.capacity() || audio.ch[1].size() != n
+        || std::fabs (audio.sampleRate - reel.sampleRate()) > 0.01)
+    {
+        whyNot = "Does not fit: the sample rate or the reel size changed.";
+        return false;
+    }
+
+    int expected = 0;
+    if (! importState.compare_exchange_strong (expected, 5))
+    {
+        whyNot = "Still busy with the last file - try again in a moment.";
+        return false;
+    }
+    importAudio = std::move (audio);
+    importState.store (1, std::memory_order_release);
+    return true;
+}
+
+void Engine::startImportJob()
+{
+    const size_t n = importAudio.frames();
+    if (n < (size_t) kMinFirstRecording || n > (size_t) reel.capacity() || importAudio.ch[1].size() != n
+        || std::fabs (importAudio.sampleRate - reel.sampleRate()) > 0.01)
+    {
+        importState.store (4, std::memory_order_release);      // the sample rate changed since the file was prepared
+        return;
+    }
+
+    job = Job();
+    job.kind = Job::Kind::importWrite;
+    commitStep (captureState());                               // the whole load is one undoable step
+    player.stop();
+    busy = true;
+    importState.store (2, std::memory_order_relaxed);
+}
+
+Engine::IoResult Engine::pollImport (uint32_t& stamp)
+{
+    const int state = importState.load (std::memory_order_acquire);
+    if (state == 3)
+    {
+        stamp = importStamp;
+        importAudio = ReelAudio();
+        importState.store (0, std::memory_order_release);
+        return IoResult::done;
+    }
+    if (state == 4)
+    {
+        importAudio = ReelAudio();
+        importState.store (0, std::memory_order_release);
+        return IoResult::rejected;
+    }
+    return IoResult::none;
 }
 
 //==============================================================================
