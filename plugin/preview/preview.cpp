@@ -149,7 +149,7 @@ namespace
         std::set<juce::String> controlled (ids.begin(), ids.end());
         expect (ids.size() == controlled.size(), viewName + ": no parameter has two controls");
         expect (controlled == allIds, viewName + ": every parameter has a control");
-        expect (allIds.size() == 27, viewName + ": 27 parameters");
+        expect (allIds.size() == 32, viewName + ": 32 parameters");
 
         std::set<juce::String> moved;
         auto moveAndCheck = [&] (const juce::String& what, const std::function<void()>& action)
@@ -193,7 +193,7 @@ namespace
         }
         expect (toggles == 10, viewName + ": 10 on/off buttons (found " + juce::String (toggles) + ")");
 
-        expect (moved == allIds, viewName + ": moving the controls reached all 27 parameters");
+        expect (moved == allIds, viewName + ": moving the controls reached all 32 parameters");
 
         // And the other way: a parameter change shows up in the control (host automation -> window)
         if (auto* knob = sliders.empty() ? nullptr : sliders.front())
@@ -744,6 +744,120 @@ int main (int argc, char** argv)
                 panels[0]->showOptions (false);
                 expect (! panels[0]->optionsShowing(), "wrapper (M8): and closes");
             }
+        }
+        resetAll (proc);
+    }
+
+    // ---------------- the clock features (milestone 10) ----------------
+    {
+        resetAll (proc);
+        PhenomeEonProcessor fresh;
+        fresh.setPlayConfigDetails (2, 2, 48000.0, 512);
+        fresh.prepareToPlay (48000.0, 512);
+
+        // A new plugin has every clock feature off, and the clock menus start where the engine expects
+        expect (parameterValue (fresh, PheParams::clockMode) == 0.0f && parameterValue (fresh, PheParams::retrigger) == 0.0f
+                    && parameterValue (fresh, PheParams::recSync) == 0.0f, "wrapper (M10): clock mode, retrigger and rec sync start Off");
+        expect (std::abs (parameterValue (fresh, PheParams::clockRate) - fresh.getValueTreeState().getParameter (PheParams::clockRate)->convertTo0to1 (3.0f)) < 1.0e-5f
+                    && std::abs (parameterValue (fresh, PheParams::clocksPerSplice) - fresh.getValueTreeState().getParameter (PheParams::clocksPerSplice)->convertTo0to1 (3.0f)) < 1.0e-5f,
+                "wrapper (M10): the rate starts at 1/4 and the stretch at 4 clocks");
+
+        // The menus reach the engine
+        auto choose = [&fresh] (const char* id, float index) { setParameter (fresh, id, fresh.getValueTreeState().getParameter (id)->convertTo0to1 (index)); };
+        choose (PheParams::clockMode, 3.0f);
+        choose (PheParams::clockRate, 7.0f);
+        choose (PheParams::clocksPerSplice, 9.0f);
+        choose (PheParams::retrigger, 7.0f);
+        choose (PheParams::recSync, 1.0f);
+        feedSilenceLoudest (fresh, 2);
+        const auto& pr = fresh.getEngine().getParams();
+        expect (pr.clockMode == 3 && pr.clockRate == 7 && pr.clocksPerSplice == 9 && pr.retrigger == 7 && pr.recSync == 1,
+                "wrapper (M10): the clock menus reach the engine");
+
+        // With no host position the clock runs by itself at 120 bpm
+        const auto view = fresh.getEngine().getReelView();
+        expect (std::abs (view.clockBpm - 120.0f) < 0.01f && ! view.clockLocked, "wrapper (M10): without a host the clock runs at 120 bpm by itself");
+
+        // Rec Sync through the real wrapper: a recording waits for a tick (1/16 at 120 bpm = 6000 samples, so within 12 blocks)
+        choose (PheParams::clockMode, 0.0f);
+        choose (PheParams::clockRate, 3.0f);                       // 1/4: every 24000 samples = 47 blocks
+        setParameter (fresh, PheParams::rec, 1.0f);
+        feedSilenceLoudest (fresh, 2);
+        expect (fresh.getEngine().getReelView().recWait == 1 && ! fresh.getEngine().getReelView().recording, "wrapper (M10): Rec waits for the tick");
+        feedSilenceLoudest (fresh, 60);
+        expect (fresh.getEngine().getReelView().recording && fresh.getEngine().getReelView().recWait == 0, "wrapper (M10): then recording starts");
+        setParameter (fresh, PheParams::rec, 0.0f);
+        feedSilenceLoudest (fresh, 120);
+        expect (! fresh.getEngine().getReelView().recording && fresh.getEngine().getReelView().lengthSamples > 0
+                    && fresh.getEngine().getReelView().lengthSamples % 24000 == 0,
+                "wrapper (M10): and ends on a tick (reel " + juce::String (fresh.getEngine().getReelView().lengthSamples) + " samples)");
+
+        // An older project (without the clock menus) opens with everything off
+        {
+            juce::MemoryBlock block;
+            fresh.getStateInformation (block);
+            auto xml = juce::AudioProcessor::getXmlFromBinary (block.getData(), (int) block.getSize());
+            if (xml != nullptr)
+            {
+                for (auto* id : { PheParams::clockMode, PheParams::clockRate, PheParams::clocksPerSplice, PheParams::retrigger, PheParams::recSync })
+                    for (int i = xml->getNumChildElements(); --i >= 0;)
+                        if (xml->getChildElement (i)->getStringAttribute ("id") == id)
+                            xml->removeChildElement (xml->getChildElement (i), true);
+                juce::MemoryBlock old;
+                juce::AudioProcessor::copyXmlToBinary (*xml, old);
+                PhenomeEonProcessor older;
+                older.setPlayConfigDetails (2, 2, 48000.0, 512);
+                older.prepareToPlay (48000.0, 512);
+                older.setStateInformation (old.getData(), (int) old.getSize());
+                expect (parameterValue (older, PheParams::clockMode) == 0.0f && parameterValue (older, PheParams::retrigger) == 0.0f
+                            && parameterValue (older, PheParams::recSync) == 0.0f, "wrapper (M10): an older project opens with every clock feature off");
+            }
+        }
+
+        // The window: the Clock box shows the tempo, the sheet opens and closes, the pictures
+        {
+            PhenomeEonEditor editor (fresh);
+            editor.showView (PhenomeEonEditor::View::styled);
+            editor.setSize (1200, 800);
+            letWindowThreadRun (150);
+            std::vector<StyledPanel*> panels;
+            collect (editor, panels);
+            expect (panels.size() == 1, "wrapper (M10): one styled panel");
+            if (! panels.empty())
+            {
+                choose (PheParams::clockMode, 2.0f);
+                feedSilenceLoudest (fresh, 20);
+                letWindowThreadRun (150);
+                save (editor, outDir.getChildFile ("styled_clock_box.png"), 1654.0f / 1200.0f);
+
+                panels[0]->showClockSheet (true);
+                letWindowThreadRun (150);
+                expect (panels[0]->clockSheetShowing() && ! panels[0]->optionsShowing(), "wrapper (M10): the Clock sheet opens");
+                save (editor, outDir.getChildFile ("styled_clock_sheet.png"), 1654.0f / 1200.0f);
+                panels[0]->showOptions (true);
+                expect (panels[0]->optionsShowing() && ! panels[0]->clockSheetShowing(), "wrapper (M10): opening Options closes the Clock sheet");
+                panels[0]->showOptions (false);
+                panels[0]->showClockSheet (true);
+                panels[0]->showClockSheet (false);
+                expect (! panels[0]->clockSheetShowing(), "wrapper (M10): and the Clock sheet closes");
+
+                // waiting to record shows in the reel display
+                setParameter (fresh, PheParams::rec, 1.0f);
+                choose (PheParams::recSync, 1.0f);
+                feedSilenceLoudest (fresh, 3);
+                setParameter (fresh, PheParams::rec, 0.0f);
+                setParameter (fresh, PheParams::rec, 1.0f);
+                feedSilenceLoudest (fresh, 2);
+                letWindowThreadRun (150);
+                save (editor, outDir.getChildFile ("styled_rec_waiting.png"), 1654.0f / 1200.0f);
+                setParameter (fresh, PheParams::rec, 0.0f);
+                feedSilenceLoudest (fresh, 120);
+                setParameter (fresh, PheParams::recSync, 0.0f);
+            }
+            editor.showView (PhenomeEonEditor::View::plain);
+            editor.setSize (1200, 800);
+            letWindowThreadRun (150);
+            save (editor, outDir.getChildFile ("plain_clock.png"), 1.0f);
         }
         resetAll (proc);
     }

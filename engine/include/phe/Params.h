@@ -11,8 +11,13 @@
 // and the Rec New Splice, Splice, Shift, Delete Splice Marker and Delete All Markers buttons. Milestone 8 adds Erase Splice
 // and Undo, and six menus for optional behaviours taken from the module's later firmware options (Vari-Speed Mode, Record
 // Source, Organize Timing, Gene Window, Play Mode, Morph Chord). The zero setting of every one of them is the normal behaviour.
+// Milestone 10 adds the optional clock features, driven by Logic's tempo (see core/HostClock.h): Clock Mode, Clock Rate,
+// Clocks per Splice, Play Retrigger and Rec Sync. Clock Mode, Play Retrigger and Rec Sync start Off, so nothing changes until
+// one of them is chosen.
 
 #pragma once
+
+#include "core/HostClock.h"
 
 namespace phe
 {
@@ -52,6 +57,13 @@ namespace phe
         int playMode      = 0;     // 0 Play lets the gene finish, 1 momentary (stops at once), 2 trigger loop (always plays;
                                    //   switching Play on jumps back to the start)
         int morphChord    = 0;     // 0 random pitch-ups past 2:30, 1.. fixed chords (see core/Morph.h)
+
+        // Clock features (milestone 10). The clock is Logic's tempo (see core/HostClock.h).
+        int clockMode       = 0;   // 0 Off, 1 Hybrid (Morph decides: up to 2/1 Gene Shift, above Time Stretch), 2 Gene Shift only, 3 Time Stretch only
+        int clockRate       = core::kDefaultClockDivision;     // 0.. index into core::kClockDivisions (how far apart the ticks are)
+        int clocksPerSplice = core::kDefaultStretchClocks;     // 0.. index into core::kStretchClocks (Time Stretch: ticks per trip through the splice)
+        int retrigger       = 0;   // 0 Off, 1.. index into core::kRetriggerClocks (every how many ticks Play restarts from Slide)
+        int recSync         = 0;   // 0 Off, 1 Rec and Rec New Splice start and stop on the next tick
 
         // Buttons (on = true).
         //   rec:        on = recording, off = not recording (a switch).

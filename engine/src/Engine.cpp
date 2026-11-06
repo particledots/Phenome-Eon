@@ -34,6 +34,7 @@ void Engine::prepare (double newSampleRate, int /*maxBlockSize*/, int /*numChann
 
     sampleRate = newSampleRate > 0.0 ? newSampleRate : 48000.0;
     player.prepare (sampleRate);
+    hostClock.prepare (sampleRate);
 
     // Only if the sample rate changed (or this is the first time) does the reel's memory change;
     // otherwise whatever is recorded stays exactly as it is.
@@ -42,6 +43,7 @@ void Engine::prepare (double newSampleRate, int /*maxBlockSize*/, int /*numChann
         abandonJob();
         undo.prepare (reel.capacity());                  // a new reel size: the undo history starts again
         recActive = recStopping = recFirst = recNew = false;
+        cancelPendingRecord();
         peakBucket = -1;
 
         // The splice markers move with the audio when it is converted to the new sample rate.
@@ -89,6 +91,8 @@ void Engine::reset()
         peakBucket = -1;
         signalRecordEnded();
     }
+    cancelPendingRecord();
+    hostClock.reset();
     if (playOn() && reel.length() > 0)
     {
         setPlayerTargets();
@@ -107,6 +111,45 @@ void Engine::signalRecordEnded()
         newSpliceStopped.store (true);
     else
         recordStopped.store (true);
+}
+
+// Rec Sync: a start or stop that was waiting for the next tick is dropped (the reel was cleared, the clock was reset ...). A waiting
+// start tells the wrapper to switch its button back off.
+void Engine::cancelPendingRecord()
+{
+    if (pendingStart)
+    {
+        recByNew = pendingNew;
+        signalRecordEnded();
+    }
+    if (pendingStopNotesNew)
+        newSpliceStopped.store (true);
+    pendingStart = pendingStop = pendingNew = pendingStopNotesNew = false;
+}
+
+// Rec Sync: the tick has come. A waiting start begins now, a waiting stop ends now (so a take is exactly a whole number of ticks long).
+void Engine::runSyncedRecord()
+{
+    if (pendingStart)
+    {
+        pendingStart = false;
+        recByNew = pendingNew;
+        if (busy || recActive)
+            signalRecordEnded();                    // a big edit started meanwhile: refused, its button goes back off
+        else
+            startRecording();
+    }
+    else if (pendingStop)
+    {
+        pendingStop = false;
+        if (recActive && ! recStopping)
+            stopRecording();
+        if (pendingStopNotesNew)
+        {
+            pendingStopNotesNew = false;
+            newSpliceStopped.store (true);
+        }
+    }
 }
 
 void Engine::startRecording()
@@ -257,6 +300,7 @@ void Engine::clearReel()
         recActive = recStopping = recFirst = recNew = false;
         signalRecordEnded();
     }
+    cancelPendingRecord();
     const EditState before = captureState();
     peakBucket = -1;
     reel.clear();
@@ -609,6 +653,13 @@ void Engine::process (float* const* channels, int numChannels, int numSamples)
         firstBlock = false;
     }
 
+    // ---- the clock (milestone 10): Logic's tempo and song position, for the whole block ----
+    const double tickBeats = core::beatsPerTick (params.clockRate, host.beatsPerBar);
+    hostClock.beginBlock (host, tickBeats);
+    const double stretchBeats = tickBeats * (double) core::stretchClocksFor (params.clocksPerSplice);
+    const int retriggerEvery = core::retriggerEveryFor (params.retrigger);
+    const bool syncRec = params.recSync == 1;
+
     // A big edit in progress (Erase Splice, Undo, Redo) carries on a little each block; until it is done the reel is silent.
     if (busy && runJobSlice (kJobChunksPerBlock))
         finishJob();
@@ -712,23 +763,50 @@ void Engine::process (float* const* channels, int numChannels, int numSamples)
             recordStopped.store (true);             // a big edit is being carried out: refused, the button goes back off
         else if (recActive && recByNew && ! recStopping)
         {
-            // Pressing Rec while a new splice is being recorded stops it, as on the module.
-            stopRecording();
+            // Pressing Rec while a new splice is being recorded stops it, as on the module (on the next tick with Rec Sync).
             recordStopped.store (true);
-            newSpliceStopped.store (true);
+            if (syncRec)
+            {
+                pendingStop = true;
+                pendingStopNotesNew = true;         // the Rec New Splice switch goes back off when the recording really stops
+            }
+            else
+            {
+                stopRecording();
+                newSpliceStopped.store (true);
+            }
         }
         else if (recActive && recStopping)
             recStopping = false;                    // pressed again while still fading out: just carry on
+        else if (recActive && pendingStop)
+            pendingStop = false;                    // switched on again before the tick that would have stopped it: carry on
+        else if (pendingStart)
+            recordStopped.store (true);             // Rec New Splice is already waiting to begin: refused, the button goes back off
         else if (! recActive)
         {
-            recByNew = false;
-            startRecording();
+            if (syncRec)
+            {
+                pendingStart = true;                // begins on the next tick
+                pendingNew = false;
+            }
+            else
+            {
+                recByNew = false;
+                startRecording();
+            }
         }
     }
     else if (! params.rec && prevRec)
     {
-        if (recActive && ! recByNew)
-            stopRecording();
+        if (pendingStart && ! pendingNew)
+            pendingStart = false;                   // changed its mind before the tick
+        else if (recActive && ! recByNew)
+        {
+            if (syncRec)
+                pendingStop = true;                 // ends on the next tick
+            else
+                stopRecording();
+        }
     }
     prevRec = params.rec;
 
@@ -736,18 +814,36 @@ void Engine::process (float* const* channels, int numChannels, int numSamples)
     {
         if (busy)
             newSpliceStopped.store (true);
-        else if (! recActive)
+        else if (! recActive && ! pendingStart)
         {
-            recByNew = true;
-            startRecording();
+            if (syncRec)
+            {
+                pendingStart = true;                // begins on the next tick
+                pendingNew = true;
+            }
+            else
+            {
+                recByNew = true;
+                startRecording();
+            }
         }
         else
-            newSpliceStopped.store (true);          // something is already recording: this press is refused, the button goes back off
+            newSpliceStopped.store (true);          // something is already recording (or waiting): this press is refused, the button goes back off
     }
     else if (! params.recNewSplice && prevRecNew)
     {
-        if (recActive && recByNew)
-            stopRecording();
+        if (pendingStart && pendingNew)
+            pendingStart = false;                   // changed its mind before the tick
+        else if (recActive && recByNew)
+        {
+            if (syncRec)
+            {
+                pendingStop = true;                 // ends on the next tick
+                pendingStopNotesNew = false;
+            }
+            else
+                stopRecording();
+        }
     }
     prevRecNew = params.recNewSplice;
 
@@ -776,6 +872,12 @@ void Engine::process (float* const* channels, int numChannels, int numSamples)
         gainOut += (targetOut - gainOut) * smoothK;
         sos     += (targetSos - sos)     * smoothK;
 
+        // The clock: is there a tick on this sample? A Rec Sync start or stop waiting for it happens first, so a take begins and ends
+        // exactly on the tick.
+        const bool tick = hostClock.tickNow();
+        if (tick && (pendingStart || pendingStop))
+            runSyncedRecord();
+
         const float inL = clean (channels[0][i]) * gainIn;
         const float inR = chs > 1 ? clean (channels[1][i]) * gainIn : inL;
 
@@ -786,7 +888,19 @@ void Engine::process (float* const* channels, int numChannels, int numSamples)
         const int length = reel.length();
         GenePlayer::Out loop;
         if (player.isPlaying() && length > 0 && ! (recActive && recFirst))
-            loop = player.step (reel);
+        {
+            GenePlayer::ClockIn clockIn;
+            const GenePlayer::ClockIn* clock = nullptr;
+            if (clockFeatureNow != 0 || retriggerEvery > 0)
+            {
+                clockIn.shiftTick = tick && clockFeatureNow == 1;
+                clockIn.retriggerTick = tick && retriggerEvery > 0 && core::floorMod (hostClock.tickIndex(), retriggerEvery) == 0;
+                if (clockFeatureNow == 2)
+                    clockIn.stretchPhase = hostClock.phaseOver (stretchBeats);
+                clock = &clockIn;
+            }
+            loop = player.step (reel, clock);
+        }
 
         // The mix. What is heard is the live input plus the gene player's sound. What is recorded is the same mix,
         // except that the fade at the end of a whole-splice lap is never baked into the reel (see GenePlayer.h).
@@ -860,6 +974,8 @@ void Engine::process (float* const* channels, int numChannels, int numSamples)
                 }
             }
         }
+
+        hostClock.next();
     }
 
     flushPeak();
@@ -891,6 +1007,12 @@ void Engine::process (float* const* channels, int numChannels, int numSamples)
     viewBusy.store (busy);
     viewRecKind.store (recActive ? (recFirst ? 1 : (recNew ? 3 : 2)) : 0);
     viewUndoState.store (undo.hasStep() ? (undo.undone() ? 2 : 1) : 0);
+    viewClockBpm.store ((float) hostClock.bpm());
+    viewClockLocked.store (hostClock.followingHost());
+    viewClockTicks.store (hostClock.ticksSoFar());
+    viewClockState.store (clockStateNow);
+    viewRecWait.store (pendingStart ? 1 : (pendingStop ? 2 : 0));
+    viewRecWaitNew.store (pendingStart ? pendingNew : recByNew);
 }
 
 void Engine::setPlayerTargets()
@@ -911,6 +1033,23 @@ void Engine::setPlayerTargets()
     t.spliceLength = spliceLength;
     t.smoothWindow = params.geneWindow == 1;
     t.chordMode = std::min (dsp::kNumMorphChords - 1, std::max (0, params.morphChord));
+
+    // Clock features: Hybrid lets Morph decide (up to 2/1 Gene Shift, above it Time Stretch). Both need genes shorter than the splice.
+    int feature = 0;
+    clockStateNow = 0;
+    const int mode = std::min (3, std::max (0, params.clockMode));
+    if (mode != 0)
+    {
+        if (t.geneSeconds <= 0.0)
+            clockStateNow = 3;
+        else
+        {
+            feature = mode == 2 ? 1 : (mode == 3 ? 2 : (t.morph.genesAtOnce > 2.001f ? 2 : 1));
+            clockStateNow = feature;
+        }
+    }
+    t.clockFeature = feature;
+    clockFeatureNow = feature;
     player.setTargets (t);
 }
 
@@ -1086,6 +1225,12 @@ Engine::ReelView Engine::getReelView() const
     v.recKind         = viewRecKind.load();
     v.busy            = viewBusy.load();
     v.undoState       = viewUndoState.load();
+    v.clockBpm        = viewClockBpm.load();
+    v.clockLocked     = viewClockLocked.load();
+    v.clockTicks      = viewClockTicks.load();
+    v.clockState      = viewClockState.load();
+    v.recWait         = viewRecWait.load();
+    v.recWaitNew      = viewRecWaitNew.load();
     return v;
 }
 

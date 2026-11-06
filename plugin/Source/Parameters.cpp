@@ -2,6 +2,7 @@
 #include <phe/Params.h>
 #include <phe/core/Scales.h>
 #include <phe/core/Morph.h>
+#include <phe/core/HostClock.h>
 
 namespace PheParams
 {
@@ -79,6 +80,30 @@ juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
     for (int i = 0; i < phe::dsp::kNumMorphChords; ++i)
         chordNames.add (phe::dsp::kMorphChords[i].name);
     choice (morphChord,    "Morph Chord",     chordNames);
+
+    // Clock features (milestone 10): appended, so older saved projects still load (they get everything Off).
+    choice (clockMode, "Clock Mode", { "Off", "Hybrid", "Gene Shift", "Time Stretch" });
+
+    juce::StringArray rateNames;
+    for (int i = 0; i < phe::core::kNumClockDivisions; ++i)
+        rateNames.add (phe::core::kClockDivisions[i].name);
+    layout.add (std::make_unique<juce::AudioParameterChoice> (juce::ParameterID { clockRate, 1 }, "Clock Rate", rateNames,
+                                                              phe::core::kDefaultClockDivision));
+
+    juce::StringArray stretchNames;
+    for (int i = 0; i < phe::core::kNumStretchClocks; ++i)
+        stretchNames.add (juce::String (phe::core::kStretchClocks[i]) + (phe::core::kStretchClocks[i] == 1 ? " clock" : " clocks"));
+    layout.add (std::make_unique<juce::AudioParameterChoice> (juce::ParameterID { clocksPerSplice, 1 }, "Clocks per Splice", stretchNames,
+                                                              phe::core::kDefaultStretchClocks));
+
+    juce::StringArray retriggerNames;
+    for (int i = 0; i < phe::core::kNumRetriggers; ++i)
+    {
+        const int every = phe::core::kRetriggerClocks[i];
+        retriggerNames.add (every == 0 ? juce::String ("Off") : (every == 1 ? juce::String ("Every clock") : "Every " + juce::String (every) + " clocks"));
+    }
+    choice (retrigger, "Play Retrigger", retriggerNames);
+    choice (recSync,   "Rec Sync",       { "Off", "On the clock" });
 
     return layout;
 }

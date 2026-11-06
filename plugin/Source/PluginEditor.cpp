@@ -16,6 +16,7 @@ namespace
     constexpr int kLeft = 24, kLabelWidth = 150, kSliderWidth = 440, kTextBoxWidth = 80;
     constexpr int kRowHeight = 40, kFirstRowY = 92;
     constexpr int kButtonX = 800, kButtonWidth = 370, kButtonHeight = 40, kButtonGap = 8;
+    constexpr int kClockHeaderY = 598, kClockFirstRowY = 622, kClockRowStep = 34;     // the clock menus, under the buttons
 }
 
 PhenomeEonSliderPanel::PhenomeEonSliderPanel (juce::AudioProcessorValueTreeState& s, ReelFileActions* actions)
@@ -43,6 +44,13 @@ PhenomeEonSliderPanel::PhenomeEonSliderPanel (juce::AudioProcessorValueTreeState
     addChoice (PheParams::geneWindow,    "Gene Window");
     addChoice (PheParams::playMode,      "Play Mode");
     addChoice (PheParams::morphChord,    "Morph Chord");
+
+    // The five clock menus (milestone 10), driven by Logic's tempo. Clock Mode, Play Retrigger and Rec Sync start Off.
+    addClockChoice (PheParams::clockMode,       "Clock Mode");
+    addClockChoice (PheParams::clockRate,       "Clock Rate");
+    addClockChoice (PheParams::clocksPerSplice, "Clocks per Splice");
+    addClockChoice (PheParams::retrigger,       "Play Retrigger");
+    addClockChoice (PheParams::recSync,         "Rec Sync");
 
     // The buttons.
     addButton (PheParams::rec,              "REC");
@@ -128,6 +136,21 @@ void PhenomeEonSliderPanel::addChoice (const char* id, const char* text)
     choices.push_back (std::move (row));
 }
 
+void PhenomeEonSliderPanel::addClockChoice (const char* id, const char* text)
+{
+    auto row = std::make_unique<ChoiceRow>();
+    row->label.setText (text, juce::dontSendNotification);
+    row->label.setFont (font (15.0f));
+    row->label.setColour (juce::Label::textColourId, kText);
+    if (auto* p = dynamic_cast<juce::AudioParameterChoice*> (state.getParameter (id)))
+        row->box.addItemList (p->choices, 1);
+    addAndMakeVisible (row->label);
+    addAndMakeVisible (row->box);
+    row->attachment = std::make_unique<ComboBoxAttachment> (state, id, row->box);
+    controlIds.push_back (id);
+    clockChoices.push_back (std::move (row));
+}
+
 void PhenomeEonSliderPanel::addButton (const char* id, const char* text)
 {
     auto item = std::make_unique<ButtonItem>();
@@ -157,6 +180,7 @@ void PhenomeEonSliderPanel::paint (juce::Graphics& g)
     g.setFont (font (12.0f, true));
     g.drawText ("BUTTONS", kButtonX, kFirstRowY - 22, kButtonWidth, 18, juce::Justification::centredLeft);
     g.drawText ("KNOBS AND MENUS", kLeft, kFirstRowY - 22, 300, 18, juce::Justification::centredLeft);
+    g.drawText ("CLOCK  (FROM LOGIC'S TEMPO)", kButtonX, kClockHeaderY, kButtonWidth, 18, juce::Justification::centredLeft);
 }
 
 void PhenomeEonSliderPanel::resized()
@@ -182,6 +206,14 @@ void PhenomeEonSliderPanel::resized()
     saveButton.setBounds (kLeft + 510, 14, 100, 30);
     folderButton.setBounds (kLeft + 620, 14, 110, 30);
     statusLabel.setBounds (kLeft + 340, 46, kWidth - 2 * kLeft - 340, 20);
+
+    int cy = kClockFirstRowY;
+    for (auto& row : clockChoices)
+    {
+        row->label.setBounds (kButtonX, cy, 150, 28);
+        row->box.setBounds (kButtonX + 150, cy, kButtonWidth - 150, 28);
+        cy += kClockRowStep;
+    }
 
     // Two groups of buttons: the five main ones, then the five that delete or undo.
     int by = kFirstRowY;

@@ -21,6 +21,15 @@
 //
 // While the tape is stopped (Vari-Speed in the middle) nothing plays. Moving Slide while stopped still scrubs.
 //
+// Clock features (milestone 10). The engine hands the player a tick now and then (from Logic's tempo, see core/HostClock.h):
+//   Gene Shift    every tick moves on to the next gene of the splice (one gene length further along) and starts it at once;
+//                 the gene then repeats, as usual, until the next tick. Needs a Gene-Size shorter than the whole splice.
+//   Time Stretch  the place in the splice where each new gene starts travels through the splice at the pace the clock sets
+//                 (the whole splice lasts a chosen number of ticks), whatever Vari-Speed says. Vari-Speed then changes only
+//                 the pitch. Also needs a Gene-Size shorter than the whole splice.
+//   Retrigger     on the chosen ticks the loop is pulled back to the Slide position and starts again.
+// With no clock feature chosen none of this does anything, and the sound is exactly what it was before.
+//
 // Plain C++17. No JUCE. Knows nothing about knobs or the plugin: it is handed numbers.
 
 #pragma once
@@ -65,6 +74,15 @@ namespace phe
             int spliceLength = 0;           // ... and how long it is (0 = the whole reel, the same as no markers)
             bool smoothWindow = false;      // Gene Window option: short genes fade in and out over their whole length
             int chordMode = 0;              // Morph Chord option: 0 = random pitch-ups, otherwise an entry of dsp::kMorphChords
+            int clockFeature = 0;           // 0 none, 1 Gene Shift, 2 Time Stretch (only used while genes are shorter than the splice)
+        };
+
+        // What the clock says at one sample (nothing in particular when no clock is passed to step()).
+        struct ClockIn
+        {
+            bool shiftTick = false;         // a tick, and Gene Shift is the feature in use
+            bool retriggerTick = false;     // a tick on which the loop is pulled back to the Slide position
+            double stretchPhase = 0.0;      // 0..1: how far through its trip the splice is (Time Stretch)
         };
 
         // What came out of one step. 'heard' has the gene fades; 'record' is what goes back onto the reel when
@@ -101,7 +119,8 @@ namespace phe
         void switchSplice (const Reel& reel);
 
         // One output sample from the reel, then moves the head on. Does nothing and returns silence when stopped.
-        Out step (const Reel& reel);
+        // 'clk' (optional) is what the clock says for this sample.
+        Out step (const Reel& reel, const ClockIn* clk = nullptr);
 
         // The position in the reel (in samples) the newest gene is reading now (the Slide position when none plays).
         double headPosition (const Reel& reel) const;
@@ -118,6 +137,7 @@ namespace phe
             double start = 0.0;      // the splice this gene was started in: first sample ...
             double len = 1.0;        // ... and length in samples
             double age = 0.0;        // time since it began (samples); only runs while the tape moves
+            double scanBase = 0.0;   // where in the splice this gene started, on top of Slide (Gene Shift / Time Stretch; else 0)
             float mult = 1.0f;       // this gene's own speed factor (the random pitch-up)
             float gainL = 1.0f, gainR = 1.0f;     // its place in the stereo picture and its share of the level
             bool releasing = false;               // fading out (a new splice took over)
@@ -129,6 +149,9 @@ namespace phe
         void spawnVoice (double overshoot, bool whole, const Reel& reel);
         void targetSplice (const Reel& reel, double& start, double& len) const;
         int activeVoices() const;
+        double baseFor (double len) const;                  // where a gene started now would begin, beyond Slide (clock features)
+        void restartFromSlide (const Reel& reel);           // Play Retrigger
+        void shiftToNextGene (const Reel& reel, double spliceLength);   // Gene Shift
 
         double sampleRate = 48000.0;
         float rateGlide = 0.01f, slideGlide = 0.01f, gateGlide = 0.01f;
@@ -143,5 +166,10 @@ namespace phe
         long spawnCount = 0;            // genes started so far (rotates the fixed stereo positions)
         dsp::Random rng;
         double rateNow = 0.0, slideNow = 0.0, gate = 1.0;
+
+        // Clock features
+        double shiftOffset = 0.0;       // Gene Shift: how far the genes have been shifted along the splice (reel samples)
+        double stretchPhaseNow = 0.0;   // Time Stretch: the latest phase the clock gave
+        bool justStarted = false;       // the gene just started: a tick on the very same sample must not move it again
     };
 }

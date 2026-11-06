@@ -128,13 +128,19 @@ private:
 //==============================================================================
 // The Options sheet (milestone 8): the six firmware-option menus, each with a plain-language line of explanation.
 // It covers the panel while open; the menus are attached to the same parameters as in the plain-slider window.
+// Milestone 10 uses a second one for the clock features (a row may also be explanation only, with no menu).
 class OptionsSheet : public juce::Component
 {
 public:
-    OptionsSheet();
+    explicit OptionsSheet (juce::String title = "OPTIONS",
+                           juce::String subtitle = "The first choice of every menu is the normal behaviour.",
+                           int height = 640);
 
     // Adds one row: a title, the menu (owned by the panel) and a line explaining what the choices do.
     void addRow (const juce::String& title, juce::ComboBox& box, const juce::String& explanation);
+
+    // A row with only an explanation (for a control that lives elsewhere on the panel).
+    void addInfoRow (const juce::String& title, const juce::String& explanation);
 
     std::function<void()> onClose;
 
@@ -145,6 +151,8 @@ public:
 private:
     struct Row { juce::String title, explanation; juce::ComboBox* box; };
     std::vector<Row> rows;
+    juce::String title, subtitle;
+    int sheetHeight = 640;
     juce::TextButton close { "CLOSE" };
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (OptionsSheet)
@@ -179,9 +187,11 @@ public:
     // Gives the Load WAV, Save WAV and Reel folder buttons something to do (milestone 9). Without it they stay greyed out.
     void setFileActions (ReelFileActions*);
 
-    // The Options sheet (open / close), also used by the automatic checks.
+    // The Options sheet and the Clock sheet (open / close), also used by the automatic checks.
     void showOptions (bool shouldShow);
     bool optionsShowing() const { return options.isVisible(); }
+    void showClockSheet (bool shouldShow);
+    bool clockSheetShowing() const { return clockSheet.isVisible(); }
 
 private:
     using ComboBoxAttachment = juce::AudioProcessorValueTreeState::ComboBoxAttachment;
@@ -211,6 +221,16 @@ private:
     juce::TextButton plainSliders { "PLAIN SLIDERS" };
     juce::TextButton optionsButton { "OPTIONS" };
     OptionsSheet options;
+
+    // The clock features (milestone 10): a box in the header with the mode and rate menus and a light that blinks at every tick,
+    // and a sheet (MORE) with the other three menus and the explanations.
+    OptionsSheet clockSheet { "CLOCK", "Logic's tempo drives these. Everything starts Off.", 508 };
+    juce::ComboBox* clockModeBox = nullptr;
+    juce::ComboBox* clockRateBox = nullptr;
+    juce::TextButton clockMore { "MORE" };
+    juce::String shownClockStatus;
+    bool shownClockLocked = false, shownClockAttention = false;
+    int shownClockTicks = -1, clockPulse = 0;
     KnobCard* variCard = nullptr;
     int shownVariMode = -1;
     int shownUndoState = -1;

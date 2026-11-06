@@ -48,6 +48,7 @@ void GenePlayer::stop()
         v = Voice();
     clock = 0.0;
     newest = 0;
+    shiftOffset = 0.0;
 }
 
 void GenePlayer::start (const Reel& reel)
@@ -56,6 +57,8 @@ void GenePlayer::start (const Reel& reel)
         v = Voice();
     clock = 0.0;
     spawnCount = 0;
+    shiftOffset = 0.0;
+    justStarted = true;
     rng.seed (0x2545F491u);
     rateNow = (double) targets.rate;
     slideNow = (double) targets.slide;
@@ -75,6 +78,8 @@ void GenePlayer::switchSplice (const Reel& reel)
         if (v.active)
             v.releasing = true;
     clock = 0.0;
+    shiftOffset = 0.0;
+    justStarted = true;
     spawnVoice (0.0, targets.geneSeconds <= 0.0, reel);
 }
 
@@ -114,6 +119,44 @@ void GenePlayer::targetSplice (const Reel& reel, double& start, double& len) con
     }
 }
 
+// Where a gene started right now begins, beyond the Slide position. Only the clock features move it, and only for genes
+// shorter than the splice.
+double GenePlayer::baseFor (double len) const
+{
+    if (targets.geneSeconds <= 0.0)
+        return 0.0;
+    if (targets.clockFeature == 2)
+        return stretchPhaseNow * len;
+    if (targets.clockFeature == 1)
+        return shiftOffset;
+    return 0.0;
+}
+
+// Play Retrigger: every gene now playing fades out quickly and a fresh one starts from the Slide position.
+void GenePlayer::restartFromSlide (const Reel& reel)
+{
+    for (auto& v : voices)
+        if (v.active)
+            v.releasing = true;
+    clock = 0.0;
+    shiftOffset = 0.0;
+    spawnVoice (0.0, targets.geneSeconds <= 0.0, reel);
+}
+
+// Gene Shift: one gene length further along the splice (the other way when the tape runs backwards), and start it now.
+void GenePlayer::shiftToNextGene (const Reel& reel, double spliceLength)
+{
+    const double speed = std::max (0.05, std::fabs (rateNow));       // a stopped tape still steps at the normal size
+    const double span = std::min (spliceLength, targets.geneSeconds * sampleRate * speed);
+    shiftOffset += rateNow < 0.0 ? -span : span;
+    shiftOffset = wrap (shiftOffset, spliceLength);
+    for (auto& v : voices)
+        if (v.active)
+            v.releasing = true;
+    clock = 0.0;
+    spawnVoice (0.0, false, reel);
+}
+
 void GenePlayer::spawnVoice (double overshoot, bool whole, const Reel& reel)
 {
     int slot = -1;
@@ -143,6 +186,7 @@ void GenePlayer::spawnVoice (double overshoot, bool whole, const Reel& reel)
     v = Voice();
     v.active = true;
     targetSplice (reel, v.start, v.len);
+    v.scanBase = whole ? 0.0 : baseFor (v.len);
     if (whole)
         v.q = v.qBase = overshoot;
     else
@@ -187,11 +231,11 @@ double GenePlayer::headPosition (const Reel& reel) const
         return 0.0;
     const Voice& v = voices[newest];
     if (v.active)
-        return v.start + wrap (slideNow * v.len + v.q, v.len);
+        return v.start + wrap (slideNow * v.len + v.scanBase + v.q, v.len);
 
     double start, len;
     targetSplice (reel, start, len);
-    return start + wrap (slideNow * len, len);
+    return start + wrap (slideNow * len + baseFor (len), len);
 }
 
 GenePlayer::View GenePlayer::view (const Reel& reel) const
@@ -212,7 +256,8 @@ GenePlayer::View GenePlayer::view (const Reel& reel) const
         targetSplice (reel, spliceStart, L);
 
     const bool whole = targets.geneSeconds <= 0.0;
-    const double start = std::min (L, std::max (0.0, slideNow * L));
+    const double base = whole ? 0.0 : (voices[newest].active ? voices[newest].scanBase : baseFor (L));
+    const double start = std::min (L, std::max (0.0, slideNow * L)) + base;     // (the window is wrapped round the splice below)
     const double speed = std::max (0.05, std::fabs (rateNow));       // a stopped tape still shows its gene at normal size
     const double span = whole ? L : std::min (L, targets.geneSeconds * sampleRate * speed);
 
@@ -229,7 +274,7 @@ GenePlayer::View GenePlayer::view (const Reel& reel) const
 }
 
 //==============================================================================
-GenePlayer::Out GenePlayer::step (const Reel& reel)
+GenePlayer::Out GenePlayer::step (const Reel& reel, const ClockIn* clk)
 {
     Out out;
     const int length = reel.length();
@@ -251,6 +296,22 @@ GenePlayer::Out GenePlayer::step (const Reel& reel)
         rateNow = 0.0;                                 // settled at a standstill (and never creeping into tiny numbers)
     const double slideBefore = slideNow;
     slideNow += ((double) targets.slide - slideNow) * (double) slideGlide;
+
+    // The clock (milestone 10). A tick on the very sample a gene was just started on does nothing (that gene already is the
+    // answer to it).
+    const bool fresh = justStarted;
+    justStarted = false;
+    if (clk != nullptr)
+    {
+        stretchPhaseNow = clk->stretchPhase;
+        if (! fresh && targets.playWanted)
+        {
+            if (clk->retriggerTick)
+                restartFromSlide (reel);
+            else if (clk->shiftTick && targets.clockFeature == 1 && targets.geneSeconds > 0.0)
+                shiftToNextGene (reel, L);
+        }
+    }
 
     // Silent when nothing moves (stopped tape, still Slide): otherwise a stopped head would hold one sample for ever.
     // Moving Slide counts as movement, so it scrubs even when the tape is stopped.
@@ -277,7 +338,7 @@ GenePlayer::Out GenePlayer::step (const Reel& reel)
         if (! v.active)
             continue;
 
-        const double position = v.start + wrap (slideNow * v.len + v.q, v.len);
+        const double position = v.start + wrap (slideNow * v.len + v.scanBase + v.q, v.len);
         const float sampleL = reel.readCubic (0, position);
         const float sampleR = reel.readCubic (1, position);
 

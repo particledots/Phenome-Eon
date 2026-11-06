@@ -4,9 +4,11 @@
 // Milestone 6: Morph (gaps, overlaps, random pitch-up and pan) and Pitch Scale.
 // Milestone 7: splices (Splice, Shift, Organize, deleting markers, recording into a new splice).
 // Milestone 8: Erase Splice, Undo / Redo, the Time Lag Accumulation limiter, the six optional behaviours.
+// Milestone 10: the tempo clock, Gene Shift, Time Stretch, Play Retrigger and Rec Sync.
 
 #include <phe/Engine.h>
 #include <phe/core/Gain.h>
+#include <phe/core/HostClock.h>
 #include <phe/core/Morph.h>
 #include <phe/core/Scales.h>
 #include <phe/core/SpliceMap.h>
@@ -61,9 +63,17 @@ struct Rig
     long long t = 0;                // running time in samples, so signals continue between runs
     int channels = 2;
 
+    // What the host (Logic) tells the engine (milestone 10). followHost = the song is playing and the position is given
+    // (the song position is simply the running time 't'); otherwise Logic is stopped and the clock runs by itself.
+    double sr = 48000.0;
+    double hostBpm = 120.0;
+    bool followHost = false;
+    bool hostGivesTempo = true;
+    phe::core::HostInfo host;
+
     // 'warmUp' runs one short quiet block first, as Logic always has audio running before anyone presses a button.
     // (The engine treats a button that is already on in the very first block as "loaded that way", not "just pressed".)
-    explicit Rig (double sampleRate = 48000.0, int numChannels = 2, bool warmUp = true) : channels (numChannels)
+    explicit Rig (double sampleRate = 48000.0, int numChannels = 2, bool warmUp = true) : channels (numChannels), sr (sampleRate)
     {
         e.prepare (sampleRate, 4096, numChannels);
         if (warmUp)
@@ -87,6 +97,13 @@ struct Rig
                     buf[(size_t) c][(size_t) k] = in (c, t + pos + k);
                 ptrs[c] = buf[(size_t) c].data();
             }
+            host = phe::core::HostInfo();
+            host.tempoValid = hostGivesTempo;
+            host.bpm = hostBpm;
+            host.playing = followHost;
+            host.ppqValid = followHost;
+            host.ppq = (double) (t + pos) * hostBpm / 60.0 / sr;
+            e.setHost (host);
             e.setParams (p);
             e.process (ptrs, channels, m);
             for (int c = 0; c < channels; ++c)
@@ -2948,6 +2965,862 @@ static void testMilestone8Stress()
 }
 
 
+//==============================================================================
+// Milestone 10: the tempo clock, Gene Shift, Time Stretch, Play Retrigger, Rec Sync
+//==============================================================================
+
+// Gene-Size knob that gives a gene of 'seconds' in a splice of 'spliceSeconds' (the inverse of phe::geneSeconds).
+static float knobForGene (double seconds, double spliceSeconds)
+{
+    const double u = std::log (seconds / spliceSeconds) / std::log (phe::kMinGeneSeconds / spliceSeconds);
+    return (float) ((double) phe::kGeneFullZone + u * (1.0 - (double) phe::kGeneFullZone));
+}
+
+// Distance between two places on a loop of length 'loop'.
+static double loopDistance (double a, double b, double loop)
+{
+    double d = std::fmod (std::fabs (a - b), loop);
+    return std::min (d, loop - d);
+}
+
+// Feeds a HostClock block by block and returns the sample numbers at which ticks happened.
+static std::vector<long long> clockTicks (phe::core::HostClock& clock, long long from, long long to, int block, double divisionBeats,
+                                          const std::function<phe::core::HostInfo (long long)>& hostAt)
+{
+    std::vector<long long> ticks;
+    for (long long pos = from; pos < to; pos += block)
+    {
+        clock.beginBlock (hostAt (pos), divisionBeats);
+        const long long end = std::min (to, pos + block);
+        for (long long i = pos; i < end; ++i)
+        {
+            if (clock.tickNow())
+                ticks.push_back (i);
+            clock.next();
+        }
+    }
+    return ticks;
+}
+
+static void testHostClock()
+{
+    using namespace phe::core;
+
+    // The division table and the "bar" division (counted in the host's own bars)
+    CHECK (beatsPerTick (3, 4.0) == 1.0, "1/4 is one beat");
+    CHECK (beatsPerTick (2, 4.0) == 2.0 && beatsPerTick (5, 4.0) == 0.5 && beatsPerTick (7, 4.0) == 0.25 && beatsPerTick (9, 4.0) == 0.125, "1/2, 1/8, 1/16, 1/32");
+    CHECK (std::fabs (beatsPerTick (4, 4.0) - 2.0 / 3.0) < 1.0e-12 && std::fabs (beatsPerTick (6, 4.0) - 1.0 / 3.0) < 1.0e-12 && std::fabs (beatsPerTick (8, 4.0) - 1.0 / 6.0) < 1.0e-12, "the triplet divisions");
+    CHECK (beatsPerTick (1, 3.0) == 3.0 && beatsPerTick (0, 3.0) == 6.0 && beatsPerTick (1, 6.0) == 6.0, "a bar is the host's bar (3/4 gives 3 beats)");
+    CHECK (beatsPerTick (1, 0.0) == 4.0 && beatsPerTick (1, std::nan ("")) == 4.0, "a nonsense bar length counts as 4 beats");
+    CHECK (beatsPerTick (-5, 4.0) == 8.0 && beatsPerTick (99, 4.0) == 0.125, "an out-of-range division is clamped");
+    CHECK (stretchClocksFor (3) == 4 && stretchClocksFor (0) == 1 && stretchClocksFor (99) == 64 && stretchClocksFor (-1) == 1, "clocks per splice table");
+    CHECK (retriggerEveryFor (0) == 0 && retriggerEveryFor (1) == 1 && retriggerEveryFor (3) == 4 && retriggerEveryFor (99) == 64, "retrigger table");
+    CHECK (floorMod (-1, 4) == 3 && floorMod (5, 4) == 1 && floorMod (0, 4) == 0 && floorMod (-8, 4) == 0, "tick numbers count round correctly before the song starts");
+    CHECK (std::strcmp (kClockDivisions[kDefaultClockDivision].name, "1/4") == 0, "the starting division is 1/4");
+
+    // Running by itself at 120 bpm: a tick every 24000 samples, whatever the block size
+    for (int block : { 1, 7, 64, 480, 4096 })
+    {
+        HostClock clock;
+        clock.prepare (48000.0);
+        HostInfo h;
+        h.tempoValid = true;
+        h.bpm = 120.0;
+        const auto ticks = clockTicks (clock, 0, 240000, block, 1.0, [&] (long long) { return h; });
+        bool exact = ticks.size() == 9;
+        for (size_t k = 0; k < ticks.size(); ++k)
+            exact = exact && ticks[k] == 24000 * (long long) (k + 1);
+        CHECK (exact, "free-running 120 bpm, block %d: ticks every 24000 samples (%d ticks, first %lld)", block, (int) ticks.size(), ticks.empty() ? -1LL : ticks[0]);
+        CHECK (! clock.followingHost() && std::fabs (clock.bpm() - 120.0) < 1.0e-9, "not following the host while Logic is stopped");
+    }
+
+    // 90 bpm, eighth notes: 48000 x 60 / 90 / 2 = 16000 samples
+    {
+        HostClock clock;
+        clock.prepare (48000.0);
+        HostInfo h;
+        h.tempoValid = true;
+        h.bpm = 90.0;
+        const auto ticks = clockTicks (clock, 0, 80000, 256, 0.5, [&] (long long) { return h; });
+        bool exact = ticks.size() == 4;
+        for (size_t k = 0; k < ticks.size(); ++k)
+            exact = exact && ticks[k] == 16000 * (long long) (k + 1);
+        CHECK (exact, "90 bpm eighth notes: a tick every 16000 samples (%d ticks)", (int) ticks.size());
+    }
+
+    // Following the song: the first block (playing at song position 0) has a tick on its very first sample, then every beat
+    for (int block : { 64, 480 })
+    {
+        HostClock clock;
+        clock.prepare (48000.0);
+        auto hostAt = [] (long long pos)
+        {
+            HostInfo h;
+            h.tempoValid = h.playing = h.ppqValid = true;
+            h.bpm = 120.0;
+            h.ppq = (double) pos * 120.0 / 60.0 / 48000.0;
+            return h;
+        };
+        const auto ticks = clockTicks (clock, 0, 100000, block, 1.0, hostAt);
+        bool exact = ticks.size() == 5;
+        for (size_t k = 0; k < ticks.size(); ++k)
+            exact = exact && ticks[k] == 24000 * (long long) k;
+        CHECK (exact, "following the song, block %d: ticks at 0, 24000, 48000 ... (%d ticks)", block, (int) ticks.size());
+        CHECK (clock.followingHost(), "following the host while Logic plays");
+    }
+
+    // The song position jumps: onto a tick (a tick at once), or between ticks (the next tick is the next beat boundary)
+    {
+        HostClock clock;
+        clock.prepare (48000.0);
+        long long jumpAt = 30000;
+        double jumpTo = 8.0;
+        auto hostAt = [&] (long long pos)
+        {
+            HostInfo h;
+            h.tempoValid = h.playing = h.ppqValid = true;
+            h.bpm = 120.0;
+            h.ppq = pos < jumpAt ? (double) pos * 2.0 / 48000.0 : jumpTo + (double) (pos - jumpAt) * 2.0 / 48000.0;
+            return h;
+        };
+        const auto onTick = clockTicks (clock, 0, 36000, 100, 1.0, hostAt);
+        // ticks: 0 and 24000 before the jump, then one right on the jump (song position 8.0 is a beat), then 1 beat later
+        CHECK (onTick.size() >= 3 && onTick[0] == 0 && onTick[1] == 24000 && onTick[2] == 30000, "a jump onto a beat ticks at once (third tick at %lld)", onTick.size() >= 3 ? onTick[2] : -1LL);
+
+        HostClock clock2;
+        clock2.prepare (48000.0);
+        jumpTo = 8.5;
+        const auto between = clockTicks (clock2, 0, 60000, 100, 1.0, hostAt);
+        bool found = false;
+        for (long long t : between)
+            if (t == 30000 + 12000)
+                found = true;
+        CHECK (found && std::count (between.begin(), between.end(), 30000LL) == 0, "a jump between beats: no tick there, the next tick half a beat later");
+    }
+
+    // Logic stops: the clock goes on by itself, without a gap or a double tick
+    {
+        HostClock clock;
+        clock.prepare (48000.0);
+        auto hostAt = [] (long long pos)
+        {
+            HostInfo h;
+            h.tempoValid = true;
+            h.bpm = 120.0;
+            h.playing = pos < 30000;
+            h.ppqValid = h.playing;
+            h.ppq = (double) pos * 2.0 / 48000.0;
+            return h;
+        };
+        const auto ticks = clockTicks (clock, 0, 100000, 100, 1.0, hostAt);
+        bool exact = ticks.size() == 5;
+        for (size_t k = 0; k < ticks.size(); ++k)
+            exact = exact && ticks[k] == 24000 * (long long) k;
+        CHECK (exact, "the clock carries on when Logic stops (%d ticks)", (int) ticks.size());
+        CHECK (! clock.followingHost(), "no longer following once Logic has stopped");
+    }
+
+    // A change of division in mid-air gives no stray tick, and tempo changes are followed
+    {
+        HostClock clock;
+        clock.prepare (48000.0);
+        HostInfo h;
+        h.tempoValid = true;
+        h.bpm = 120.0;
+        long long count = 0;
+        clock.beginBlock (h, 1.0);
+        for (int i = 0; i < 30000; ++i) { count += clock.tickNow() ? 1 : 0; clock.next(); }         // one tick (at 24000)
+        clock.beginBlock (h, 0.5);                                                                    // eighths: no tick just for changing
+        const bool strayTick = clock.tickNow();
+        CHECK (count == 1 && ! strayTick, "changing the division does not make a tick (%lld)", count);
+        h.bpm = 60.0;
+        clock.beginBlock (h, 1.0);
+        CHECK (std::fabs (clock.bpm() - 60.0) < 1.0e-9, "a new tempo is picked up at the next block");
+        h.bpm = 5000.0;
+        clock.beginBlock (h, 1.0);
+        CHECK (clock.bpm() <= 999.0 && clock.bpm() >= 10.0, "an absurd tempo is held within limits");
+        h.tempoValid = false;
+        h.bpm = 77.0;
+        clock.beginBlock (h, 1.0);
+        CHECK (clock.bpm() > 100.0, "a tempo the host does not give is ignored (keeps the last)");
+    }
+
+    // Phase over a stretch of beats
+    {
+        HostClock clock;
+        clock.prepare (48000.0);
+        HostInfo h;
+        h.tempoValid = h.playing = h.ppqValid = true;
+        h.bpm = 120.0;
+        h.ppq = 1.0;
+        clock.beginBlock (h, 1.0);
+        CHECK (std::fabs (clock.phaseOver (4.0) - 0.25) < 1.0e-12 && std::fabs (clock.phaseOver (0.5)) < 1.0e-12, "phase 0.25 of four beats, 0 of half a beat");
+        h.ppq = -1.0;
+        clock.beginBlock (h, 1.0);
+        CHECK (std::fabs (clock.phaseOver (4.0) - 0.75) < 1.0e-12, "before the song starts the phase still runs round (%f)", clock.phaseOver (4.0));
+        CHECK (clock.phaseOver (0.0) == 0.0, "no length, no phase");
+    }
+}
+
+// The clock features change nothing while they are all off, whatever Logic does
+static void testClockOffChangesNothing()
+{
+    auto render = [] (bool follow, double bpm, int rate)
+    {
+        Rig r;
+        r.recordFirstTake (96000, 500);
+        r.p.geneSize = 0.5f;
+        r.p.morph = 0.7f;
+        r.p.slide = 0.2f;
+        r.followHost = follow;
+        r.hostBpm = bpm;
+        r.p.clockRate = rate;                        // a different division is still nothing while the features are off
+        return r.run (60000, 777, silence);
+    };
+    const auto a = render (false, 120.0, 3), b = render (true, 87.0, 3), c = render (true, 200.0, 8);
+    CHECK (a == b && a == c, "with every clock feature off the sound does not depend on Logic's tempo or position");
+}
+
+static void testGeneShift()
+{
+    const int n = 192000;                                        // a 4 second reel
+    const int span = 12000;                                      // a gene of 0.25 s
+    const float knob = knobForGene (0.25, (double) n / 48000.0);
+
+    // every tick steps on to the next gene
+    {
+        Rig r;
+        r.recordFirstTake (n, 500);
+        r.followHost = true;
+        r.p.geneSize = knob;
+        r.p.clockMode = 2;                                       // Gene Shift only
+        r.p.clockRate = 3;                                       // 1/4 at 120 bpm: a tick every 24000 samples
+        startFreshFromControls (r, n);
+        std::vector<int> starts;
+        for (int i = 0; i < 6 * 48000 / 100; ++i)
+        {
+            r.run (100, 100, silence);
+            const int g = r.e.getReelView().geneStart;
+            if (starts.empty() || g != starts.back())
+                starts.push_back (g);
+        }
+        bool steps = starts.size() >= 11;
+        for (size_t k = 1; k < starts.size(); ++k)
+        {
+            const int expected = (int) ((starts[k - 1] + span) % n);
+            steps = steps && std::abs (starts[k] - expected) <= 3;
+        }
+        CHECK (steps, "Gene Shift: every tick moves the gene one gene length along (%d distinct gene positions, first %d second %d)",
+               (int) starts.size(), starts.empty() ? -1 : starts[0], starts.size() > 1 ? starts[1] : -1);
+        CHECK (r.e.getReelView().clockState == 1, "the window is told Gene Shift is working");
+    }
+
+    // it wraps round the splice, and Retrigger pulls it back to the start
+    {
+        Rig r;
+        r.recordFirstTake (n, 500);
+        r.followHost = true;
+        r.p.geneSize = knob;
+        r.p.clockMode = 2;
+        r.p.clockRate = 5;                                       // 1/8: a tick every 12000 samples
+        startFreshFromControls (r, n);
+        int maxStart = 0;
+        bool wrapped = false;
+        int previous = -1;
+        for (int i = 0; i < 10 * 48000 / 100; ++i)
+        {
+            r.run (100, 100, silence);
+            const int g = r.e.getReelView().geneStart;
+            if (previous >= 0 && g < previous - n / 2)
+                wrapped = true;
+            previous = g;
+            maxStart = std::max (maxStart, g);
+        }
+        CHECK (wrapped && maxStart > n - 2 * span - 10, "Gene Shift wraps round the end of the splice (largest start %d)", maxStart);
+
+        r.p.retrigger = 3;                                       // every 4 clocks
+        bool backAtStart = false;
+        for (int i = 0; i < 4 * 48000 / 100 && ! backAtStart; ++i)
+        {
+            r.run (100, 100, silence);
+            backAtStart = r.e.getReelView().geneStart == 0;
+        }
+        CHECK (backAtStart, "Play Retrigger resets Gene Shift to the first gene");
+    }
+
+    // backwards: the genes step the other way
+    {
+        Rig r;
+        r.recordFirstTake (n, 500);
+        r.followHost = true;
+        r.p.geneSize = knob;
+        r.p.variSpeed = 0.25f;                                   // backwards at original speed
+        r.p.clockMode = 2;
+        r.p.clockRate = 3;
+        startFreshFromControls (r, n);
+        r.run (2000, 100, silence);
+        CHECK (r.e.getReelView().rate < -0.5f, "setup: the tape runs backwards (%f)", r.e.getReelView().rate);
+        std::vector<int> starts;
+        for (int i = 0; i < 4 * 48000 / 100; ++i)
+        {
+            r.run (100, 100, silence);
+            const int g = r.e.getReelView().geneStart;
+            if (starts.empty() || g != starts.back())
+                starts.push_back (g);
+        }
+        bool back = starts.size() >= 4;
+        for (size_t k = 1; k < starts.size(); ++k)
+        {
+            const int expected = (int) (((long long) starts[k - 1] - span + n) % n);
+            back = back && std::abs (starts[k] - expected) <= 3;
+        }
+        CHECK (back, "Gene Shift runs backwards when the tape does (%d positions)", (int) starts.size());
+    }
+
+    // a tick on the very sample the gene starts does not move it again; the next one does
+    {
+        Rig r;
+        r.recordFirstTake (n, 500);
+        r.followHost = true;
+        r.p.geneSize = knob;
+        r.p.clockMode = 2;
+        r.p.clockRate = 3;
+        r.p.play = false;
+        r.run (n + 2000, 500, silence);
+        while (r.t % 24000 != 0)
+            r.run (1, 1, silence);
+        r.p.play = true;                                         // a fresh gene starts on the first sample of the next block, which is a tick
+        r.run (100, 100, silence);
+        CHECK (r.e.getReelView().geneStart == 0, "a tick that coincides with the start does not shift the first gene (%d)", r.e.getReelView().geneStart);
+        r.run (24000, 100, silence);
+        CHECK (std::abs (r.e.getReelView().geneStart - span) <= 3, "the next tick does (%d)", r.e.getReelView().geneStart);
+    }
+
+    // Slide still moves where the genes are counted from
+    {
+        Rig r;
+        r.recordFirstTake (n, 500);
+        r.followHost = true;
+        r.p.geneSize = knob;
+        r.p.slide = 0.5f;
+        r.p.clockMode = 2;
+        r.p.clockRate = 3;
+        startFreshFromControls (r, n);
+        r.run (3000, 100, silence);
+        CHECK (loopDistance ((double) r.e.getReelView().geneStart, (double) n / 2, (double) n) <= (double) span + 3.0 && r.e.getReelView().geneStart >= n / 2 - 3,
+               "Slide still sets where genes start (%d)", r.e.getReelView().geneStart);
+    }
+}
+
+static void testClockModesAndGeneSize()
+{
+    const int n = 96000;
+    auto stateFor = [&] (int mode, float morph, bool wholeGene)
+    {
+        Rig r;
+        r.recordFirstTake (n, 500);
+        r.followHost = true;
+        r.p.clockMode = mode;
+        r.p.morph = morph;
+        r.p.geneSize = wholeGene ? 0.0f : 0.5f;
+        r.run (3000, 100, silence);
+        return r.e.getReelView().clockState;
+    };
+    CHECK (stateFor (0, 0.18f, false) == 0 && stateFor (0, 0.9f, false) == 0, "Clock Mode Off: nothing works");
+    CHECK (stateFor (1, 0.18f, false) == 1 && stateFor (1, 0.40f, false) == 1, "Hybrid at 1/1 and below 2/1: Gene Shift");
+    CHECK (stateFor (1, 0.50f, false) == 1, "Hybrid at exactly 2/1: still Gene Shift");
+    CHECK (stateFor (1, 0.55f, false) == 2 && stateFor (1, 0.9f, false) == 2, "Hybrid above 2/1: Time Stretch");
+    CHECK (stateFor (2, 0.9f, false) == 1 && stateFor (3, 0.18f, false) == 2, "Gene Shift only and Time Stretch only ignore Morph");
+    CHECK (stateFor (1, 0.18f, true) == 3 && stateFor (2, 0.18f, true) == 3 && stateFor (3, 0.9f, true) == 3, "with Gene-Size on the whole splice the window is told the clock needs a smaller Gene-Size");
+
+    // With a whole-splice gene the clock features change nothing at all
+    auto render = [&] (int mode)
+    {
+        Rig r;
+        r.recordFirstTake (n, 500);
+        r.followHost = true;
+        r.p.clockMode = mode;
+        r.p.morph = 0.7f;
+        r.p.geneSize = 0.0f;
+        r.p.slide = 0.3f;
+        return r.run (50000, 333, silence);
+    };
+    const auto off = render (0);
+    CHECK (off == render (2) && off == render (3) && off == render (1), "Gene-Size on the whole splice: Gene Shift and Time Stretch do nothing");
+}
+
+static void testTimeStretch()
+{
+    const int n = 192000;                                        // a 4 second reel
+    const float knob = knobForGene (0.1, (double) n / 48000.0);  // genes of 0.1 s (4800 samples)
+
+    // The genes' starting place travels through the splice at the clock's pace (here: 16 clocks of 0.5 s = 8 s per trip: half speed),
+    // wherever Vari-Speed is. Phase of the song: beats / 16.
+    for (float vari : { 0.75f, 0.95f, 0.6f })
+    {
+        Rig r;
+        r.recordFirstTake (n, 500);
+        r.followHost = true;
+        r.p.geneSize = knob;
+        r.p.clockMode = 3;                                       // Time Stretch only
+        r.p.clockRate = 3;
+        r.p.clocksPerSplice = 7;                                 // 16 clocks
+        r.p.variSpeed = vari;
+        startFreshFromControls (r, n);
+        double worst = 0.0;
+        int samples = 0;
+        double lowest = 1.0e9, highest = 0.0;
+        for (int i = 0; i < 10 * 48000 / 500; ++i)
+        {
+            r.run (500, 500, silence);
+            const double beats = (double) r.t * 2.0 / 48000.0;
+            const double phase = beats / 16.0 - std::floor (beats / 16.0);
+            const double expected = phase * n;
+            const int g = r.e.getReelView().geneStart;
+            if (i > 20)
+            {
+                // the newest gene started up to one gene ago (0.1 s, in which the scan moves 2400 samples) plus this block
+                const double behind = std::fmod (expected - (double) g + 2.0 * n, (double) n);
+                worst = std::max (worst, behind > n / 2 ? (double) n - behind : behind);
+                lowest = std::min (lowest, (double) g);
+                highest = std::max (highest, (double) g);
+                ++samples;
+            }
+        }
+        CHECK (worst <= 2400.0 + 500.0 + 4.0, "Time Stretch, Vari-Speed %.2f: genes start where the clock says (off by at most %.0f samples)", vari, worst);
+        CHECK (highest - lowest > (double) n * 0.8 && samples > 100, "the scan really travels through the splice (%.0f to %.0f)", lowest, highest);
+        CHECK (r.e.getReelView().clockState == 2, "the window is told Time Stretch is working");
+    }
+
+    // A slower tempo is a slower trip: at 60 bpm the same 16 clocks take 16 s
+    {
+        Rig r;
+        r.recordFirstTake (n, 500);
+        r.followHost = true;
+        r.hostBpm = 60.0;
+        r.p.geneSize = knob;
+        r.p.clockMode = 3;
+        r.p.clockRate = 3;
+        r.p.clocksPerSplice = 7;
+        startFreshFromControls (r, n);
+        r.run (4 * 48000, 500, silence);
+        const double beats = (double) r.t / 48000.0;             // 1 beat per second
+        const double expected = (beats / 16.0 - std::floor (beats / 16.0)) * n;
+        CHECK (loopDistance ((double) r.e.getReelView().geneStart, expected, (double) n) < 1200.0 + 500.0 + 4.0,
+               "at 60 bpm the trip is twice as long (gene start %d, expected %.0f)", r.e.getReelView().geneStart, expected);
+    }
+
+    // With the trip lasting exactly as long as the splice, the splice plays as it was recorded (speed 1, pitch 1): the output is the reel.
+    {
+        Rig r;
+        r.recordFirstTake (n, 500);
+        r.followHost = true;
+        r.p.geneSize = knob;
+        r.p.clockMode = 3;
+        r.p.clockRate = 3;
+        r.p.clocksPerSplice = 5;                                 // 8 clocks of 0.5 s = 4 s = the splice
+        r.p.play = false;
+        r.run (n + 2000, 500, silence);
+        r.p.play = true;
+        r.run (3000, 500, silence);
+        const long long t0 = r.t;
+        const auto out = r.run (96000, 500, silence);
+        int close = 0, total = 0;
+        for (int i = 2000; i < 96000; ++i)
+        {
+            const long long tt = t0 + i;
+            // the reel as recorded: tone() of the recording time (the first take started at t = 0 of the rig's signal)
+            const float original = 0.0f + tone (0, tt % n);
+            ++total;
+            if (std::fabs (out[0][(size_t) i] - original) < 0.03f)
+                ++close;
+        }
+        CHECK ((double) close / (double) total > 0.94, "Time Stretch with the trip as long as the splice plays the splice as recorded (%d of %d samples match)", close, total);
+    }
+
+    // Vari-Speed only changes the pitch: a genes-at-once overlap (Hybrid above 2/1) at double speed still scans at the same pace
+    {
+        Rig a, b;
+        for (Rig* r : { &a, &b })
+        {
+            r->recordFirstTake (n, 500);
+            r->followHost = true;
+            r->p.geneSize = knob;
+            r->p.clockMode = 1;
+            r->p.morph = 0.7f;
+            r->p.clocksPerSplice = 7;
+        }
+        a.p.variSpeed = 0.75f;
+        b.p.variSpeed = 1.0f;
+        a.run (6 * 48000, 500, silence);
+        b.run (6 * 48000, 500, silence);
+        CHECK (loopDistance ((double) a.e.getReelView().geneStart, (double) b.e.getReelView().geneStart, (double) n) < 6000.0,
+               "Hybrid above 2/1: double Vari-Speed scans at the same pace (%d vs %d)", a.e.getReelView().geneStart, b.e.getReelView().geneStart);
+    }
+
+    // Time Stretch with Vari-Speed stopped is silent (the tape is stopped)
+    {
+        Rig r;
+        r.recordFirstTake (n, 500);
+        r.followHost = true;
+        r.p.geneSize = knob;
+        r.p.clockMode = 3;
+        r.p.variSpeed = 0.5f;
+        r.run (20000, 500, silence);
+        const auto out = r.run (4000, 500, silence);
+        CHECK (maxAbs (out[0]) < 1.0e-4f, "stopped tape stays silent in Time Stretch");
+    }
+}
+
+static void testPlayRetrigger()
+{
+    const int n = 96000;                                         // a 2 second reel: one lap of the whole splice at original speed
+
+    auto positionsAtTicks = [&] (int retrigger, int slideKnobPercent, std::vector<int>& afterTick)
+    {
+        Rig r;
+        r.recordFirstTake (n, 500);
+        r.followHost = true;
+        r.p.clockRate = 3;                                       // ticks every 24000 samples
+        r.p.retrigger = retrigger;                               // 2 = every 2 clocks = every 48000 samples
+        r.p.slide = (float) slideKnobPercent / 100.0f;
+        startFreshFromControls (r, n);
+        for (int i = 0; i < 2 * 96000 / 100; ++i)
+        {
+            const long long before = r.t;
+            r.run (100, 100, silence);
+            const long long boundary = 48000 * ((before + 99) / 48000);       // a multiple of 48000 inside this block?
+            if (boundary >= before && boundary < before + 100 && before > 20000)
+                afterTick.push_back (r.e.getReelView().playPos);
+        }
+    };
+
+    std::vector<int> with, without;
+    positionsAtTicks (2, 0, with);
+    positionsAtTicks (0, 0, without);
+    bool pulled = with.size() >= 3;
+    for (int p : with)
+        pulled = pulled && p < 160;
+    CHECK (pulled, "Play Retrigger: at every second tick the loop is back at the start (%d ticks seen, first position %d)", (int) with.size(), with.empty() ? -1 : with[0]);
+    bool free = without.size() >= 3;
+    for (int p : without)
+        free = free && (p >= 160 || p < 0);
+    CHECK (! without.empty() && free, "without Retrigger the loop just goes on (position %d)", without.empty() ? -1 : without[0]);
+
+    // The restart point is the Slide position
+    std::vector<int> slid;
+    positionsAtTicks (2, 50, slid);
+    bool atSlide = slid.size() >= 3;
+    for (int p : slid)
+        atSlide = atSlide && std::abs (p - n / 2) < 200;
+    CHECK (atSlide, "the loop restarts from the Slide position (%d)", slid.empty() ? -1 : slid[0]);
+
+    // Every clock
+    {
+        Rig r;
+        r.recordFirstTake (n, 500);
+        r.followHost = true;
+        r.p.clockRate = 3;
+        r.p.retrigger = 1;
+        startFreshFromControls (r, n);
+        r.run (30000, 100, silence);
+        std::vector<int> positions;
+        int previous = r.e.getReelView().playPos;
+        int restarts = 0;
+        for (int i = 0; i < 96000 / 100; ++i)
+        {
+            r.run (100, 100, silence);
+            const int p = r.e.getReelView().playPos;
+            if (p < previous - 1000)
+                ++restarts;
+            previous = p;
+        }
+        CHECK (restarts == 4, "Retrigger every clock: the loop restarts every 24000 samples (%d restarts in 2 s)", restarts);
+    }
+
+    // With Play off (Classic) a stopped loop is not started by the clock
+    {
+        Rig r;
+        r.recordFirstTake (n, 500);
+        r.followHost = true;
+        r.p.clockRate = 3;
+        r.p.retrigger = 1;
+        r.p.play = false;
+        r.run (n + 3000, 500, silence);
+        CHECK (! r.e.getReelView().playing, "setup: the loop has stopped");
+        r.run (60000, 500, silence);
+        CHECK (! r.e.getReelView().playing, "the clock does not start a stopped loop");
+        const auto out = r.run (2000, 500, silence);
+        CHECK (maxAbs (out[0]) < 1.0e-6f, "and it stays silent");
+    }
+
+    // The clock is Logic's tempo: half the tempo, half as often
+    {
+        Rig r;
+        r.recordFirstTake (n, 500);
+        r.followHost = true;
+        r.hostBpm = 60.0;
+        r.p.clockRate = 3;                                       // ticks every 48000 samples now
+        r.p.retrigger = 1;
+        startFreshFromControls (r, n);
+        r.run (1000, 100, silence);
+        int restarts = 0, previous = r.e.getReelView().playPos;
+        for (int i = 0; i < 96000 / 100 * 2; ++i)
+        {
+            r.run (100, 100, silence);
+            const int p = r.e.getReelView().playPos;
+            if (p < previous - 1000)
+                ++restarts;
+            previous = p;
+        }
+        CHECK (restarts == 4, "at 60 bpm a quarter-note retrigger comes every 48000 samples (%d in 4 s)", restarts);
+    }
+}
+
+static void testRecSync()
+{
+    // The very first take starts and ends on ticks, so it is a whole number of ticks long
+    {
+        Rig r;
+        r.followHost = true;
+        r.p.clockRate = 3;                                       // ticks every 24000 samples
+        r.p.recSync = 1;
+        r.run (5000, 100, tone);
+        r.p.rec = true;                                          // pressed at 5000: waits
+        bool waitingShown = false, startedEarly = false;
+        for (int i = 0; i < 189; ++i)                            // up to 5000 + 18900 = 23900
+        {
+            r.run (100, 100, tone);
+            const auto v = r.e.getReelView();
+            waitingShown = waitingShown || (v.recWait == 1 && ! v.recWaitNew);
+            startedEarly = startedEarly || v.recording;
+        }
+        CHECK (waitingShown && ! startedEarly, "Rec Sync: after pressing Rec nothing is recorded yet and the window is told it is waiting");
+        r.run (200, 100, tone);                                   // the tick at 24000 has gone by
+        auto v = r.e.getReelView();
+        CHECK (v.recording && v.recWait == 0 && v.recPos >= 99 && v.recPos <= 101, "Rec Sync: recording began on the tick (record head %d)", v.recPos);
+        r.run (36000 - 100, 100, tone);                           // now at 60000
+        r.p.rec = false;                                          // released: waits for the tick at 72000
+        r.run (6000, 100, tone);
+        v = r.e.getReelView();
+        CHECK (v.recording && v.recWait == 2, "Rec Sync: after releasing Rec the recording goes on until the tick");
+        r.run (6200, 100, tone);
+        v = r.e.getReelView();
+        CHECK (! v.recording && v.recWait == 0 && r.e.getReel().length() == 48000, "Rec Sync: the take is exactly two ticks long (%d samples)", r.e.getReel().length());
+        CHECK (! r.e.takeRecordStopped(), "nothing was refused");
+    }
+
+    // Changing its mind before the tick: nothing is recorded
+    {
+        Rig r;
+        r.followHost = true;
+        r.p.clockRate = 3;
+        r.p.recSync = 1;
+        r.run (5000, 100, tone);
+        r.p.rec = true;
+        r.run (1000, 100, tone);
+        r.p.rec = false;
+        r.run (60000, 100, tone);
+        CHECK (r.e.getReel().length() == 0 && ! r.e.getReelView().recording && r.e.getReelView().recWait == 0, "Rec Sync: pressed and released before the tick: nothing recorded");
+    }
+
+    // Stopping, then pressing Rec again before the tick: the recording just goes on
+    {
+        Rig r;
+        r.followHost = true;
+        r.p.clockRate = 3;
+        r.p.recSync = 1;
+        r.p.rec = true;
+        r.run (30000, 100, tone);                                 // started at 24000? (the tick at 0 was before the press: next is 24000)
+        CHECK (r.e.getReelView().recording, "setup: recording");
+        r.p.rec = false;
+        r.run (1000, 100, tone);
+        CHECK (r.e.getReelView().recWait == 2, "setup: waiting to stop");
+        r.p.rec = true;
+        r.run (100, 100, tone);
+        CHECK (r.e.getReelView().recWait == 0 && r.e.getReelView().recording, "switching Rec on again cancels the waiting stop");
+        r.run (60000, 100, tone);
+        CHECK (r.e.getReelView().recording, "and the recording carries on past the tick");
+        r.p.rec = false;
+        r.run (30000, 100, tone);
+        CHECK (! r.e.getReelView().recording && r.e.getReel().length() % 24000 == 0, "it then ends on a tick (length %d)", r.e.getReel().length());
+    }
+
+    // Over an existing reel and for a new splice
+    {
+        Rig r;
+        r.followHost = true;
+        r.p.clockRate = 3;
+        r.recordFirstTake (48000, 100);
+        r.p.recSync = 1;
+        const int base = r.e.getReel().length();
+        r.run (3000, 100, tone);
+        r.p.recNewSplice = true;
+        r.run (200, 100, tone);
+        auto v = r.e.getReelView();
+        CHECK (v.recWait == 1 && v.recWaitNew && ! v.recording, "Rec New Splice waits for the tick too (and the window knows it is the new-splice button)");
+        r.p.rec = true;                                           // the other record button while one is waiting: refused
+        r.run (200, 100, tone);
+        CHECK (r.e.takeRecordStopped(), "pressing Rec while Rec New Splice waits is refused");
+        r.p.rec = false;
+        r.run (30000, 100, tone);
+        v = r.e.getReelView();
+        CHECK (v.recording && v.recKind == 3, "the new splice is being recorded");
+        r.p.recNewSplice = false;
+        r.run (50000, 100, tone);
+        const int added = r.e.getReel().length() - base;
+        CHECK (! r.e.getReelView().recording && added > 0 && added % 24000 == 0 && r.e.getReelView().numSplices == 2, "the new splice is a whole number of ticks long (%d samples, %d splices)", added, r.e.getReelView().numSplices);
+    }
+
+    // Rec over the splice (Time Lag Accumulation) starts and stops on ticks too, and Rec pressed over a new-splice recording
+    // stops it on the next tick and switches the Rec New Splice button off
+    {
+        Rig r;
+        r.followHost = true;
+        r.p.clockRate = 3;
+        r.recordFirstTake (48000, 100);
+        r.p.recSync = 1;
+        r.p.recNewSplice = true;
+        r.run (30000, 100, tone);
+        CHECK (r.e.getReelView().recording && r.e.getReelView().recKind == 3, "setup: recording a new splice");
+        r.e.takeNewSpliceStopped();
+        r.p.rec = true;
+        r.run (200, 100, tone);
+        CHECK (r.e.takeRecordStopped() && r.e.getReelView().recWait == 2, "Rec pressed over a new-splice recording: Rec goes back off, the stop waits for the tick");
+        CHECK (! r.e.takeNewSpliceStopped(), "the Rec New Splice button stays on until the recording really stops");
+        r.p.rec = false;
+        r.run (30000, 100, tone);
+        CHECK (! r.e.getReelView().recording && r.e.takeNewSpliceStopped(), "then the recording ends and Rec New Splice is switched off");
+    }
+
+    // Rec Sync off: Rec starts at once, as before
+    {
+        Rig r;
+        r.followHost = true;
+        r.p.clockRate = 3;
+        r.run (5000, 100, tone);
+        r.p.rec = true;
+        r.run (200, 100, tone);
+        CHECK (r.e.getReelView().recording && r.e.getReelView().recWait == 0, "Rec Sync off: Rec starts straight away");
+    }
+
+    // Clearing the reel or a reset drops a waiting start and tells the button to go off
+    {
+        Rig r;
+        r.followHost = true;
+        r.p.clockRate = 3;
+        r.recordFirstTake (48000, 100);
+        r.p.recSync = 1;
+        r.run (3000, 100, tone);
+        r.p.rec = true;
+        r.run (200, 100, tone);
+        CHECK (r.e.getReelView().recWait == 1, "setup: waiting");
+        r.p.clearReel = true;
+        r.run (200, 100, tone);
+        r.p.clearReel = false;
+        CHECK (r.e.getReelView().recWait == 0 && r.e.takeRecordStopped(), "Clear Reel cancels a waiting start and the Rec button goes off");
+        r.run (50000, 100, tone);
+        CHECK (! r.e.getReelView().recording, "and nothing starts at the tick");
+    }
+}
+
+// Block size does not change the sound, with the clock running by itself (Logic stopped): everything on at once
+static void testClockBlockSizeIndependence()
+{
+    auto scenario = [] (int block)
+    {
+        Rig r;
+        r.p.clockRate = 5;                                       // eighths: every 12000 samples
+        r.p.recSync = 1;
+        r.p.rec = true;
+        Channels all ((size_t) 2);
+        auto add = [&] (const Channels& c) { for (int ch = 0; ch < 2; ++ch) all[(size_t) ch].insert (all[(size_t) ch].end(), c[(size_t) ch].begin(), c[(size_t) ch].end()); };
+        add (r.run (65536, block, tone));                        // the first take waits for a tick, then records
+        r.p.rec = false;
+        add (r.run (4096 * 4, block, tone));                     // ... and ends on a tick
+        r.p.geneSize = knobForGene (0.12, (double) r.e.getReel().length() / 48000.0);
+        r.p.clockMode = 2;
+        r.p.retrigger = 4;
+        add (r.run (65536, block, silence));
+        r.p.clockMode = 3;
+        r.p.morph = 0.7f;
+        r.p.clocksPerSplice = 4;
+        add (r.run (65536, block, silence));
+        r.p.clockMode = 1;
+        r.p.morph = 0.3f;
+        r.p.recNewSplice = true;
+        add (r.run (32768, block, tone));
+        r.p.recNewSplice = false;
+        add (r.run (32768, block, tone));
+        return all;
+    };
+    const auto reference = scenario (512);
+    for (int block : { 64, 128, 256, 4096 })
+    {
+        const auto other = scenario (block);
+        CHECK (other == reference, "the clock features give exactly the same sound at block size %d as at 512", block);
+    }
+    CHECK (maxAbs (reference[0]) > 0.05f && maxAbs (reference[0]) < 100.0f, "setup: the scenario made sound");
+}
+
+// Random controls, random host behaviour: nothing goes wrong
+static void testMilestone10Stress()
+{
+    Rig r (44100.0);
+    uint32_t seed = 424242u;
+    auto rnd = [&seed] { seed = seed * 1664525u + 1013904223u; return (float) (seed >> 8) / 16777216.0f; };
+    bool finite = true, consistent = true;
+    for (int blockNumber = 0; blockNumber < 3000; ++blockNumber)
+    {
+        r.p.organize = rnd();   r.p.geneSize = rnd() * rnd();   r.p.slide = rnd();   r.p.variSpeed = rnd();   r.p.morph = rnd();
+        r.p.rec = rnd() > 0.94f;   r.p.recNewSplice = rnd() > 0.93f;   r.p.play = rnd() > 0.15f;
+        r.p.splice = rnd() > 0.6f;   r.p.shift = rnd() > 0.7f;   r.p.deleteMarker = rnd() > 0.95f;   r.p.deleteAllMarkers = rnd() > 0.99f;
+        r.p.eraseSplice = rnd() > 0.92f;   r.p.undo = rnd() > 0.88f;   r.p.clearReel = rnd() > 0.997f;
+        r.p.soundOnSound = rnd();   r.p.playMode = (int) (rnd() * 2.99f);   r.p.geneWindow = rnd() > 0.5f ? 1 : 0;
+        r.p.clockMode = (int) (rnd() * 3.99f);   r.p.clockRate = (int) (rnd() * 9.99f);   r.p.clocksPerSplice = (int) (rnd() * 9.99f);
+        r.p.retrigger = (int) (rnd() * 7.99f);   r.p.recSync = rnd() > 0.5f ? 1 : 0;
+        r.followHost = rnd() > 0.3f;
+        r.hostBpm = 20.0 + 280.0 * rnd();
+        r.hostGivesTempo = rnd() > 0.1f;
+        if (rnd() > 0.9f)
+            r.t += (long long) (rnd() * 500000.0f);                  // the song position jumps
+        const auto out = r.run (200 + (int) (rnd() * 300.0f), 100, tone);
+        for (int c = 0; c < 2; ++c)
+            for (float v : out[(size_t) c])
+                if (! std::isfinite (v) || std::fabs (v) > 100.0f)
+                    finite = false;
+
+        const auto view = r.e.getReelView();
+        const auto marks = markersOf (r.e);
+        if (! view.busy)
+        {
+            const int length = r.e.getReel().length();
+            int previous = 0;
+            for (int m : marks)
+            {
+                if (m - previous < phe::core::kMinSpliceSamples || length - m < phe::core::kMinSpliceSamples)
+                    consistent = false;
+                previous = m;
+            }
+            if (view.numSplices != (int) marks.size() + 1 || view.selectedSplice < 0 || view.selectedSplice >= view.numSplices) consistent = false;
+            if (length < 0 || length > view.capacitySamples || (length == 0 && ! marks.empty())) consistent = false;
+            if (view.recWait < 0 || view.recWait > 2 || view.clockState < 0 || view.clockState > 3) consistent = false;
+            if (view.clockBpm < 10.0f || view.clockBpm > 999.0f) consistent = false;
+        }
+    }
+    CHECK (finite, "random clock settings, host jumps and buttons never make bad sound");
+    CHECK (consistent, "the markers, selection, length and clock read-outs always stay valid");
+
+    r.p = phe::Params();
+    r.p.play = false;
+    r.followHost = false;
+    finishEdits (r);
+    r.run (4096, 256, silence);
+    const auto view = r.e.getReelView();
+    CHECK (! view.busy && view.recWait == 0 && ! view.recording, "after the random work the engine is idle");
+}
+
+
 int main()
 {
     testPassThroughWhenEmpty();
@@ -3010,6 +3883,15 @@ int main()
     testGeneWindowSmooth();
     testMorphChordInEngine();
     testMilestone8Stress();
+    testHostClock();
+    testClockOffChangesNothing();
+    testGeneShift();
+    testClockModesAndGeneSize();
+    testTimeStretch();
+    testPlayRetrigger();
+    testRecSync();
+    testClockBlockSizeIndependence();
+    testMilestone10Stress();
     testEdgeCases();
     testGainSteps();
     testScales();

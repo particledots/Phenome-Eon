@@ -48,12 +48,14 @@ private:
 
     void addSlider (const char* id, const char* text);
     void addChoice (const char* id, const char* text);
+    void addClockChoice (const char* id, const char* text);
     void addButton (const char* id, const char* text);
 
     juce::AudioProcessorValueTreeState& state;
     std::vector<juce::String> controlIds;
     std::vector<std::unique_ptr<SliderRow>>  sliders;
     std::vector<std::unique_ptr<ChoiceRow>>  choices;
+    std::vector<std::unique_ptr<ChoiceRow>>  clockChoices;      // the five clock menus (milestone 10), under the buttons
     std::vector<std::unique_ptr<ButtonItem>> buttons;
     juce::TextButton styledPanelButton { "Styled panel" };
 

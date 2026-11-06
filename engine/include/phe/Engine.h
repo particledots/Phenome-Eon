@@ -1,6 +1,8 @@
 // The PhenomeEon audio engine.
 //
-// Milestone 8: Erase Splice, Undo / Redo, Time Lag Accumulation polish and six optional behaviours (see Params.h), on top of
+// Milestone 10: optional clock features from Logic's tempo (Gene Shift, Time Stretch, Play Retrigger, Rec Sync; see core/HostClock.h
+// and GenePlayer.h), on top of
+// milestone 8: Erase Splice, Undo / Redo, Time Lag Accumulation polish and six optional behaviours (see Params.h), on top of
 // milestone 7: splices, on top of milestone 6 (Morph and Pitch Scale), milestone 5 (the tape head and genes) and
 // milestone 4 (the reel, recording, Sound On Sound, Clear Reel).
 //
@@ -57,6 +59,10 @@ namespace phe
         void setParams (const Params& p) { params = p; }
         const Params& getParams() const { return params; }
 
+        // What Logic says about tempo and song position for the coming block (milestone 10). Called by the wrapper at the start
+        // of every block, like setParams. The clock features use it; without them it changes nothing.
+        void setHost (const core::HostInfo& h) { host = h; }
+
         // Process one block in place: 'channels' holds numChannels pointers to numSamples floats each.
         // The sound that comes in is replaced by the sound that goes out.
         void process (float* const* channels, int numChannels, int numSamples);
@@ -88,6 +94,12 @@ namespace phe
             int recKind = 0;             // while recording: 1 first recording, 2 over the splice (Time Lag Accumulation), 3 new splice
             bool busy = false;           // a big edit (Erase Splice, Undo, Redo) is being carried out
             int undoState = 0;           // 0 nothing to undo, 1 Undo will act, 2 Redo will act
+            float clockBpm = 0.0f;       // the tempo the clock is running at
+            bool clockLocked = false;    // true: following Logic's song position; false: running by itself at Logic's tempo
+            int clockTicks = 0;          // goes up by one at every tick (the window blinks a light with it)
+            int clockState = 0;          // 0 clock features off, 1 Gene Shift, 2 Time Stretch, 3 chosen but Gene-Size is the whole splice
+            int recWait = 0;             // 0 nothing, 1 Rec waiting for the next tick to start, 2 Rec waiting for the next tick to stop
+            bool recWaitNew = false;     // the wait belongs to Rec New Splice (otherwise to Rec)
         };
         ReelView getReelView() const;
         const Reel& getReel() const { return reel; }
@@ -148,6 +160,8 @@ namespace phe
         void notePeak (int position, float left, float right);
         void flushPeak();
         void setPlayerTargets();
+        void runSyncedRecord();
+        void cancelPendingRecord();                          // Rec Sync: the tick has come, start or stop recording now
 
         // Edits and undo (milestone 8)
         using EditState = core::EditState;
@@ -168,6 +182,14 @@ namespace phe
         void startImportJob();
 
         Params params;
+        core::HostInfo host;
+        core::HostClock hostClock;
+        int clockFeatureNow = 0;         // 0 none, 1 Gene Shift, 2 Time Stretch (what the controls ask for right now)
+        int clockStateNow = 0;           // as ReelView::clockState
+        bool pendingStart = false;       // Rec Sync: Rec (or Rec New Splice, see pendingNew) is waiting for the next tick to begin
+        bool pendingStop = false;        // Rec Sync: the recording is waiting for the next tick to end
+        bool pendingNew = false;         // the waiting start is Rec New Splice
+        bool pendingStopNotesNew = false;     // the waiting stop came from the Rec button pressed over a new-splice recording
         Reel reel;
 
         double sampleRate = 48000.0;
@@ -237,6 +259,9 @@ namespace phe
         std::atomic<float> viewGeneSeconds { 0.0f }, viewRate { 0.0f };
         std::atomic<bool> viewRecording { false }, viewPlaying { false }, viewBusy { false };
         std::atomic<int> viewRecKind { 0 }, viewUndoState { 0 };
+        std::atomic<float> viewClockBpm { 0.0f };
+        std::atomic<bool> viewClockLocked { false }, viewRecWaitNew { false };
+        std::atomic<int> viewClockTicks { 0 }, viewClockState { 0 }, viewRecWait { 0 };
         std::atomic<bool> recordStopped { false }, clearHandled { false }, newSpliceStopped { false };
         std::atomic<int> handledButtons { 0 };
     };

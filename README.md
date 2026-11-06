@@ -4,10 +4,22 @@ An original AU / VST3 effect for Logic Pro, inspired by the feel of a Eurorack g
 Make Noise Morphagene). All DSP is our own code; it is not a port or copy of anything, and it is not affiliated
 with Make Noise.
 
-Status: **milestone 9 (reel files with splice markers, the reel folder, project links): tested in Logic on both Macs, works as described.**
+Status: **milestone 10 (optional clock features from Logic's tempo): built and checked by the automatic tests, NOT yet tested by Bryn in Logic.**
 Milestones 1 to 9 were tested in Logic on both Macs and work.
 
-Version 0.9.0 (milestone 9, tested, works). Same styled panel and the same 27 control ids as 0.8.0; the
+Version 0.10.0 (milestone 10). Five new controls (32 in all; older projects open with all of them Off, sounding exactly as 0.9.0):
+
+- **Clock Mode:** Off / Hybrid / Gene Shift / Time Stretch. Gene Shift: every tick jumps to the next gene. Time Stretch: the clock
+  sets how long one trip through the splice takes, the pitch stays Vari-Speed's. Hybrid: Gene Shift while Morph is at 2/1 or lower,
+  Time Stretch above. These need a Gene-Size shorter than the whole splice (the Clock box says SET GENE if not).
+- **Clock Rate:** 2 bars down to 1/32, with triplets. Follows Logic's song position while Logic plays; keeps running at Logic's tempo
+  when Logic is stopped (120 BPM if no tempo is given).
+- **Clocks per Splice** (Time Stretch), **Play Retrigger** (pull the loop back to Slide every N ticks), **Rec Sync** (Rec and Rec New
+  Splice start and stop on the tick; the display says REC WAIT).
+- In the styled panel: a Clock box in the header (mode, rate, tick light, tempo) and a MORE sheet. In the plain window: five menus.
+
+Earlier notes (version 0.9.0):
+
 Load WAV, Save WAV and Reel folder buttons now work, in the styled panel and in the plain-slider window. Everything from 0.8.0
 is unchanged.
 
@@ -27,7 +39,6 @@ is unchanged.
   "reel not saved to a file yet - Save WAV to keep it". Clear Reel (an empty reel) drops the link.
 - **Status line:** the footer of the styled panel (and under the title in the plain window) shows what the reel file is doing.
 - **While Logic is stopped:** a save or load waits for audio to run ("waiting for audio to run (press Play in Logic)...").
-- **Still not working:** the optional clock features (milestone 10).
 
 Tested in Logic on the M4 Mac mini (macOS Tahoe, Logic 11.2.2) and the Intel Mac (macOS 12.7.8, Logic 10.7.8): everything works as described. What was also checked automatically beforehand: the engine self-tests (638 checks as before, plus 10,400 new
 checks: WAV writing and reading in every format and with damaged files, markers, sample-rate conversion, the hand-over of the

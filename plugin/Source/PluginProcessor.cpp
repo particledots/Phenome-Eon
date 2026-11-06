@@ -2,6 +2,7 @@
 #include "PluginEditor.h"
 #include <cmath>
 #include <phe/core/Morph.h>
+#include <phe/core/HostClock.h>
 
 namespace
 {
@@ -163,6 +164,12 @@ phe::Params PhenomeEonProcessor::readParams() const
     p.geneWindow    = choiceOf (PheParams::geneWindow, 1);
     p.playMode      = choiceOf (PheParams::playMode, 2);
     p.morphChord    = choiceOf (PheParams::morphChord, phe::dsp::kNumMorphChords - 1);
+
+    p.clockMode       = choiceOf (PheParams::clockMode, 3);
+    p.clockRate       = choiceOf (PheParams::clockRate, phe::core::kNumClockDivisions - 1);
+    p.clocksPerSplice = choiceOf (PheParams::clocksPerSplice, phe::core::kNumStretchClocks - 1);
+    p.retrigger       = choiceOf (PheParams::retrigger, phe::core::kNumRetriggers - 1);
+    p.recSync         = choiceOf (PheParams::recSync, 1);
     return p;
 }
 
@@ -173,6 +180,30 @@ void PhenomeEonProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::
     // Silence any output channels that have no matching input (not expected with the layouts above).
     for (int c = getTotalNumInputChannels(); c < getTotalNumOutputChannels(); ++c)
         buffer.clear (c, 0, buffer.getNumSamples());
+
+    // What Logic says about tempo and song position (the clock features follow it; with them off it changes nothing).
+    phe::core::HostInfo host;
+    if (auto* playHead = getPlayHead())
+    {
+        if (auto position = playHead->getPosition())
+        {
+            if (auto bpm = position->getBpm())
+            {
+                host.tempoValid = true;
+                host.bpm = *bpm;
+            }
+            host.playing = position->getIsPlaying();
+            if (auto ppq = position->getPpqPosition())
+            {
+                host.ppqValid = true;
+                host.ppq = *ppq;
+            }
+            if (auto signature = position->getTimeSignature())
+                if (signature->numerator > 0 && signature->denominator > 0)
+                    host.beatsPerBar = (double) signature->numerator * 4.0 / (double) signature->denominator;
+        }
+    }
+    engine.setHost (host);
 
     engine.setParams (readParams());
     engine.process (buffer.getArrayOfWritePointers(), juce::jmin (getTotalNumInputChannels(), buffer.getNumChannels()),

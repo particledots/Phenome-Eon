@@ -171,7 +171,7 @@ void ReelDisplay::refresh()
         || now.geneSpliceStart != view.geneSpliceStart || now.geneSpliceLength != view.geneSpliceLength
         || now.numSplices != view.numSplices || now.selectedSplice != view.selectedSplice
         || now.playingSplice != view.playingSplice || now.newSpliceBase != view.newSpliceBase
-        || now.busy != view.busy || now.undoState != view.undoState || now.recKind != view.recKind
+        || now.busy != view.busy || now.undoState != view.undoState || now.recKind != view.recKind || now.recWait != view.recWait
         || ! juce::exactlyEqual (now.geneSeconds, view.geneSeconds) || ! juce::exactlyEqual (now.rate, view.rate))
     {
         view = now;
@@ -212,6 +212,8 @@ void ReelDisplay::paint (juce::Graphics& g)
     juce::String state = "EMPTY";
     juce::Colour stateColour = muted;
     if (! demo && view.busy)   { state = "BUSY"; stateColour = amber; }
+    else if (! demo && view.recWait == 1) { state = "REC WAIT"; stateColour = amber; }       // Rec Sync: waiting for the next clock tick
+    else if (recording && view.recWait == 2) { state = "REC > STOP"; stateColour = amber; }
     else if (recording)        { state = view.recKind == 2 ? "REC TLA" : "REC";  stateColour = recRed; }
     else if (haveReel)         { state = (view.playing && std::fabs (view.rate) > 0.002f) ? "PLAY" : "STOP"; stateColour = text; }
 
@@ -616,35 +618,43 @@ void KnobCard::paint (juce::Graphics& g)
 }
 
 //==============================================================================
-OptionsSheet::OptionsSheet()
+OptionsSheet::OptionsSheet (juce::String sheetTitle, juce::String sheetSubtitle, int height)
+    : title (std::move (sheetTitle)), subtitle (std::move (sheetSubtitle)), sheetHeight (height)
 {
     close.onClick = [this] { if (onClose) onClose(); };
     addAndMakeVisible (close);
 }
 
-void OptionsSheet::addRow (const juce::String& title, juce::ComboBox& box, const juce::String& explanation)
+void OptionsSheet::addRow (const juce::String& rowTitle, juce::ComboBox& box, const juce::String& explanation)
 {
     addAndMakeVisible (box);
-    rows.push_back ({ title, explanation, &box });
+    rows.push_back ({ rowTitle, explanation, &box });
+    resized();
+}
+
+void OptionsSheet::addInfoRow (const juce::String& rowTitle, const juce::String& explanation)
+{
+    rows.push_back ({ rowTitle, explanation, nullptr });
     resized();
 }
 
 namespace
 {
-    constexpr int kSheetW = 860, kSheetH = 640, kSheetRowH = 82;
-    juce::Rectangle<int> sheetBox (juce::Rectangle<int> whole)
+    constexpr int kSheetW = 860, kSheetRowH = 82;
+    juce::Rectangle<int> sheetBox (juce::Rectangle<int> whole, int height)
     {
-        return juce::Rectangle<int> (kSheetW, kSheetH).withCentre (whole.getCentre());
+        return juce::Rectangle<int> (kSheetW, height).withCentre (whole.getCentre());
     }
 }
 
 void OptionsSheet::resized()
 {
-    const auto box = sheetBox (getLocalBounds());
+    const auto box = sheetBox (getLocalBounds(), sheetHeight);
     int y = box.getY() + 74;
     for (auto& r : rows)
     {
-        r.box->setBounds (box.getRight() - 24 - 300, y, 300, 32);
+        if (r.box != nullptr)
+            r.box->setBounds (box.getRight() - 24 - 300, y, 300, 32);
         y += kSheetRowH;
     }
     close.setBounds (box.getRight() - 24 - 110, box.getY() + 20, 110, 32);
@@ -653,18 +663,21 @@ void OptionsSheet::resized()
 void OptionsSheet::paint (juce::Graphics& g)
 {
     g.fillAll (background.withAlpha (0.82f));
-    const auto box = sheetBox (getLocalBounds());
+    const auto box = sheetBox (getLocalBounds(), sheetHeight);
     g.setColour (card);
     g.fillRoundedRectangle (box.toFloat(), 10.0f);
     g.setColour (cardEdge);
     g.drawRoundedRectangle (box.toFloat().reduced (0.5f), 10.0f, 1.0f);
 
     g.setColour (text);
-    g.setFont (sans (26.0f, true, 0.04f));
-    g.drawText ("OPTIONS", box.getX() + 24, box.getY() + 18, 300, 36, juce::Justification::centredLeft, false);
+    const auto titleFont = sans (26.0f, true, 0.04f);
+    g.setFont (titleFont);
+    const int titleWidth = (int) std::ceil (textWidth (titleFont, title)) + 4;
+    g.drawText (title, box.getX() + 24, box.getY() + 18, titleWidth, 36, juce::Justification::centredLeft, false);
     g.setColour (muted);
     g.setFont (sans (14.0f));
-    g.drawText ("The first choice of every menu is the normal behaviour.", box.getX() + 190, box.getY() + 18, 480, 36,
+    const int subtitleX = box.getX() + 24 + titleWidth + 22;
+    g.drawText (subtitle, subtitleX, box.getY() + 18, juce::jmax (100, box.getRight() - 24 - 110 - 16 - subtitleX), 36,
                 juce::Justification::centredLeft, false);
 
     int y = box.getY() + 74;
@@ -750,6 +763,38 @@ StyledPanel::StyledPanel (juce::AudioProcessorValueTreeState& s, juce::AudioProc
 
     optionsButton.onClick = [this] { showOptions (! options.isVisible()); };
     addAndMakeVisible (optionsButton);
+
+    // ---- the clock features (milestone 10): mode and rate in the header box, the rest on the Clock sheet ----
+    {
+        auto& modeItem = makeChoice (PheParams::clockMode);
+        auto& rateItem = makeChoice (PheParams::clockRate);
+        clockModeBox = &modeItem.box;
+        clockRateBox = &rateItem.box;
+        addAndMakeVisible (*clockModeBox);
+        addAndMakeVisible (*clockRateBox);
+
+        clockSheet.addInfoRow ("Clock Mode  (in the Clock box)",
+                               "Off. Hybrid: Gene Shift while Morph is at 2/1 or lower, Time Stretch above it. Gene Shift: each tick jumps to the next gene. "
+                               "Time Stretch: the clock sets the pace through the splice. Both need a Gene-Size shorter than the whole splice.");
+        clockSheet.addInfoRow ("Clock Rate  (in the Clock box)",
+                               "How far apart the ticks are, as note lengths of Logic's tempo (2 bars down to 1/32, with triplets). "
+                               "The clock follows Logic's song position; when Logic is stopped it keeps running at the same tempo.");
+        clockSheet.addRow ("Clocks per Splice", makeChoice (PheParams::clocksPerSplice).box,
+                           "Time Stretch: how many ticks one trip through the splice lasts. With the rate at 1/4, 4 clocks is one bar. "
+                           "The splice is stretched or squeezed to fit, and Vari-Speed then changes only the pitch.");
+        clockSheet.addRow ("Play Retrigger", makeChoice (PheParams::retrigger).box,
+                           "Pulls the loop back to the Slide position every chosen number of ticks, so it keeps in step with the song. "
+                           "Off: never. (Switching Play on always starts from Slide.)");
+        clockSheet.addRow ("Rec Sync", makeChoice (PheParams::recSync).box,
+                           "On the clock: Rec and Rec New Splice start and stop on the next tick, so a take is a whole number of ticks long and loops in time. "
+                           "The Rec light says WAIT until the tick comes.");
+        clockSheet.onClose = [this] { showClockSheet (false); };
+        clockSheet.setVisible (false);
+        addChildComponent (clockSheet);
+
+        clockMore.onClick = [this] { showClockSheet (! clockSheet.isVisible()); };
+        addAndMakeVisible (clockMore);
+    }
 
     // Under Morph: Pitch Scale
     auto& scale = makeChoice (PheParams::pitchScale);
@@ -842,10 +887,22 @@ void StyledPanel::addPanelButton (const char* id, const juce::String& text, bool
 
 void StyledPanel::showOptions (bool shouldShow)
 {
+    if (shouldShow && clockSheet.isVisible())
+        showClockSheet (false);
     options.setVisible (shouldShow);
     if (shouldShow)
         options.toFront (false);
     optionsButton.setButtonText (shouldShow ? "CLOSE OPTIONS" : "OPTIONS");
+}
+
+void StyledPanel::showClockSheet (bool shouldShow)
+{
+    if (shouldShow)
+        showOptions (false);
+    clockSheet.setVisible (shouldShow);
+    if (shouldShow)
+        clockSheet.toFront (false);
+    clockMore.setButtonText ("MORE");
 }
 
 void StyledPanel::timerCallback()
@@ -895,6 +952,42 @@ void StyledPanel::timerCallback()
         variCard->repaint();
     }
 
+    // The Clock box: tempo, what the clock is doing, and a light that blinks at every tick.
+    if (engineForReadouts != nullptr)
+    {
+        const auto v = engineForReadouts->getReelView();
+        juce::String status = v.clockBpm > 0.0f ? juce::String (v.clockBpm, 1) + " BPM" : juce::String ("-");
+        const int mode = juce::jlimit (0, 3, (int) std::lround (state.getRawParameterValue (PheParams::clockMode)->load()));
+        if (mode != 0)
+        {
+            if (v.clockState == 1)      status += "  SHIFT";
+            else if (v.clockState == 2) status += "  STRETCH";
+            else if (v.clockState == 3) status += "  SET GENE";
+        }
+        const bool attention = mode != 0 && v.clockState == 3;
+        bool redraw = false;
+        if (status != shownClockStatus || v.clockLocked != shownClockLocked || attention != shownClockAttention)
+        {
+            shownClockStatus = status;
+            shownClockLocked = v.clockLocked;
+            shownClockAttention = attention;
+            redraw = true;
+        }
+        if (v.clockTicks != shownClockTicks)
+        {
+            shownClockTicks = v.clockTicks;
+            clockPulse = 2;                                      // lit for the next couple of timer steps (about 0.1 s)
+            redraw = true;
+        }
+        else if (clockPulse > 0)
+        {
+            --clockPulse;
+            redraw = true;
+        }
+        if (redraw)
+            repaint (kClockBox);
+    }
+
     // Organize and Gene-Size say things about the splices: redraw them when the splices change.
     if (engineForReadouts != nullptr)
     {
@@ -935,22 +1028,25 @@ void StyledPanel::paint (juce::Graphics& g)
                 juce::Rectangle<int> (750, kReelFileBox.getY(), 145, kReelFileBox.getHeight()),
                 juce::Justification::centredLeft, true);
 
-    // Clock box (space kept for the optional clock features, milestone 10)
+    // Clock box (milestone 10): Logic's tempo drives Gene Shift, Time Stretch, Play Retrigger and Rec Sync
     {
-        juce::Path box;
-        box.addRoundedRectangle (kClockBox.toFloat().reduced (0.5f), 8.0f);
-        juce::Path dashed;
-        const float dashes[] = { 4.0f, 3.0f };
-        juce::PathStrokeType (1.0f).createDashedStroke (dashed, box, dashes, 2);
-        g.setColour (cardEdge.brighter (0.15f));
-        g.fillPath (dashed);
+        g.setColour (card);
+        g.fillRoundedRectangle (kClockBox.toFloat(), 8.0f);
+        g.setColour (cardEdge);
+        g.drawRoundedRectangle (kClockBox.toFloat().reduced (0.5f), 8.0f, 1.0f);
         g.setColour (muted);
         g.setFont (sans (14.5f, false, 0.10f));
-        g.drawText ("CLOCK (LATER)", juce::Rectangle<int> (kClockBox.getX() + 16, kClockBox.getY() + 5, 215, 20), juce::Justification::centredLeft, false);
-        g.setFont (sans (14.5f));
-        g.drawFittedText ("Off by default. Space kept\nfor Logic tempo features.",
-                          juce::Rectangle<int> (kClockBox.getX() + 16, kClockBox.getY() + 25, kClockBox.getWidth() - 20, 36),
-                          juce::Justification::topLeft, 2, 1.0f);
+        g.drawText ("CLOCK", juce::Rectangle<int> (kClockBox.getX() + 12, kClockBox.getY() + 4, 60, 22), juce::Justification::centredLeft, false);
+
+        // the tick light
+        const auto dot = juce::Rectangle<float> (8.0f, 8.0f).withCentre ({ (float) kClockBox.getX() + 79.0f, (float) kClockBox.getY() + 15.0f });
+        g.setColour (clockPulse > 0 ? amber : cardEdge.brighter (0.25f));
+        g.fillEllipse (dot);
+
+        g.setFont (mono (13.0f));
+        g.setColour (shownClockAttention ? amber : (shownClockLocked ? text : muted));
+        g.drawText (shownClockStatus, juce::Rectangle<int> (kClockBox.getX() + 90, kClockBox.getY() + 4, kClockBox.getWidth() - 98, 22),
+                    juce::Justification::centredRight, true);
     }
 
     // Section labels over the button rows
@@ -993,6 +1089,16 @@ void StyledPanel::resized()
     };
     place (0, kLeftGroupX, kLeftGroupW);
     place (5, kRightGroupX, kRightGroupW);
+
+    // Clock box: mode, rate, and the button for the rest
+    if (clockModeBox != nullptr)
+    {
+        const int cy = kClockBox.getY() + 29;
+        clockModeBox->setBounds (kClockBox.getX() + 8, cy, 112, 28);
+        clockRateBox->setBounds (kClockBox.getX() + 124, cy, 66, 28);
+        clockMore.setBounds (kClockBox.getX() + 194, cy, 47, 28);
+    }
+    clockSheet.setBounds (getLocalBounds());
 
     // Reel file buttons
     const int by = kReelFileBox.getY() + 14;

@@ -3,7 +3,7 @@
 // The short ids below are what Logic stores in saved projects and automation, so they must not be
 // renamed once people start using the plugin. New controls get new ids added at the end.
 //
-// All of them are in use by milestone 8.
+// All of them are in use by milestone 10 (32 in all).
 
 #pragma once
 
@@ -45,6 +45,13 @@ namespace PheParams
     inline constexpr const char* geneWindow    = "geneWindow";      // Short fades / Smooth windows
     inline constexpr const char* playMode      = "playMode";        // Classic / Momentary / Trigger loop
     inline constexpr const char* morphChord    = "morphChord";      // Random pitch-ups / four chord choices
+
+    // Clock features (milestone 10), driven by Logic's tempo. Clock Mode, Play Retrigger and Rec Sync start Off.
+    inline constexpr const char* clockMode       = "clockMode";         // Off / Hybrid / Gene Shift / Time Stretch
+    inline constexpr const char* clockRate       = "clockRate";         // how far apart the ticks are: 2 bars ... 1/32
+    inline constexpr const char* clocksPerSplice = "clocksPerSplice";   // Time Stretch: ticks per trip through the splice
+    inline constexpr const char* retrigger       = "retrigger";         // Play Retrigger: Off / every 1 ... 64 clocks
+    inline constexpr const char* recSync         = "recSync";           // Rec and Rec New Splice: Off / On the clock
 
     juce::AudioProcessorValueTreeState::ParameterLayout createLayout();
 }
