@@ -4,10 +4,10 @@ An original AU / VST3 effect for Logic Pro, inspired by the feel of a Eurorack g
 Make Noise Morphagene). All DSP is our own code; it is not a port or copy of anything, and it is not affiliated
 with Make Noise.
 
-Status: **milestone 9 (reel files with splice markers, the reel folder, project links): built, NOT yet tested in Logic.**
-Milestones 1 to 8 were tested in Logic on both Macs and work.
+Status: **milestone 9 (reel files with splice markers, the reel folder, project links): tested in Logic on both Macs, works as described.**
+Milestones 1 to 9 were tested in Logic on both Macs and work.
 
-Version 0.9.0 (milestone 9, built, waiting for a test in Logic). Same styled panel and the same 27 control ids as 0.8.0; the
+Version 0.9.0 (milestone 9, tested, works). Same styled panel and the same 27 control ids as 0.8.0; the
 Load WAV, Save WAV and Reel folder buttons now work, in the styled panel and in the plain-slider window. Everything from 0.8.0
 is unchanged.
 
@@ -29,14 +29,13 @@ is unchanged.
 - **While Logic is stopped:** a save or load waits for audio to run ("waiting for audio to run (press Play in Logic)...").
 - **Still not working:** the optional clock features (milestone 10).
 
-What has been checked automatically (before any test in Logic): the engine self-tests (638 checks as before, plus 10,400 new
+Tested in Logic on the M4 Mac mini (macOS Tahoe, Logic 11.2.2) and the Intel Mac (macOS 12.7.8, Logic 10.7.8): everything works as described. What was also checked automatically beforehand: the engine self-tests (638 checks as before, plus 10,400 new
 checks: WAV writing and reading in every format and with damaged files, markers, sample-rate conversion, the hand-over of the
 reel to and from the audio thread at several block sizes with the sound proven identical while a copy is made, Undo / Redo of a
 load, loading and saving a 100-second reel, a sample-rate change in the middle of a job, long random sequences of buttons,
 saves and loads, and the file library with real files: moved, changed and missing files, unwritable folders), also run under a
 memory-error checker with no errors; the preview tool (245 checks, drives the real plugin code: save, project link, reopening,
-missing file); and the GitHub build. The file chooser dialogs themselves cannot be exercised without a real desktop and are for
-the Logic test.
+missing file); and the GitHub build. The file chooser dialogs were checked by hand in Logic.
 
 Version 0.8.0 (milestone 8, tested, works). Same styled panel and the same 21 control ids as 0.7.0, plus six
 new menu ids at the end (27 in all). Everything from 0.7.0 works as before while the new menus are left on their first choice.
