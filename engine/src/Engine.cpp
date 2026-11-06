@@ -16,7 +16,8 @@ namespace
     constexpr int    kMinFirstRecording = 64;       // a first recording (or a new splice) shorter than this many samples is thrown away
     constexpr double kGateRampSeconds   = 0.004;    // punching in and out of a recording over existing audio
     constexpr double kSmoothSeconds     = 0.010;    // level knobs glide instead of jumping
-    constexpr int    kJobChunksPerBlock = 8;        // a big edit (Erase Splice, Undo) moves this many chunks (about 2.7 s of audio) per block
+    constexpr int    kJobChunksPerBlock = 8;        // a big edit (Erase Splice, Undo) moves this many chunks (about 2.7 s of audio) per 512-sample block
+    constexpr int    kJobChunksMax = 16;            // ... and never more than this many in one block, however big the block is
     constexpr int    kJobBucketsPerBlock = 48;      // ... and redraws this many waveform slices per block
 
     // Anything that is not a normal number is treated as silence, so a bad sample from the host can never
@@ -535,7 +536,7 @@ bool Engine::runJobSlice (int budgetChunks)
     const int endBucket = std::min (core::PeakOverview::kBuckets, (job.peakTo + perBucket - 1) / perBucket);
     if (job.peakCursor < endBucket)
     {
-        const int upTo = std::min (endBucket, job.peakCursor + kJobBucketsPerBlock * budgetChunks / kJobChunksPerBlock);
+        const int upTo = std::min (endBucket, job.peakCursor + std::max (1, kJobBucketsPerBlock * budgetChunks / kJobChunksPerBlock));
         reel.rebuildPeakBuckets (job.peakCursor, upTo);
         job.peakCursor = upTo;
         if (job.peakCursor < endBucket)
@@ -661,7 +662,9 @@ void Engine::process (float* const* channels, int numChannels, int numSamples)
     const bool syncRec = params.recSync == 1;
 
     // A big edit in progress (Erase Splice, Undo, Redo) carries on a little each block; until it is done the reel is silent.
-    if (busy && runJobSlice (kJobChunksPerBlock))
+    // The slice is sized to the block (a small block gets a small slice, so a job never takes longer than the block lasts).
+    const int jobChunks = std::max (1, std::min (kJobChunksMax, kJobChunksPerBlock * numSamples / 512));
+    if (busy && runJobSlice (jobChunks))
         finishJob();
 
     // Saving or loading a reel file starts here, when nothing else is going on (never while recording or in the middle of an edit).

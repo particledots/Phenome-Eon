@@ -640,7 +640,7 @@ void OptionsSheet::addInfoRow (const juce::String& rowTitle, const juce::String&
 
 namespace
 {
-    constexpr int kSheetW = 860, kSheetRowH = 82;
+    constexpr int kSheetW = 860, kSheetRowH = 108;
     juce::Rectangle<int> sheetBox (juce::Rectangle<int> whole, int height)
     {
         return juce::Rectangle<int> (kSheetW, height).withCentre (whole.getCentre());
@@ -686,10 +686,16 @@ void OptionsSheet::paint (juce::Graphics& g)
         g.setColour (amber);
         g.setFont (sans (17.0f, true, 0.04f));
         g.drawText (r.title, box.getX() + 24, y, 320, 32, juce::Justification::centredLeft, false);
+        // The first line of the text says in plain words what the control is for; the rest says what each choice does.
+        const auto lead = r.explanation.upToFirstOccurrenceOf ("\n", false, false);
+        const auto choices = r.explanation.fromFirstOccurrenceOf ("\n", false, false);
+        g.setColour (text);
+        g.setFont (sans (14.5f));
+        g.drawText (lead, box.getX() + 24, y + 31, kSheetW - 48, 22, juce::Justification::centredLeft, false);
         g.setColour (muted);
-        g.setFont (sans (13.5f));
-        g.drawFittedText (r.explanation, juce::Rectangle<int> (box.getX() + 24, y + 36, kSheetW - 48, 38),
-                          juce::Justification::topLeft, 2, 1.0f);
+        g.setFont (sans (13.0f));
+        g.drawFittedText (choices, juce::Rectangle<int> (box.getX() + 24, y + 55, kSheetW - 48, 52),
+                          juce::Justification::topLeft, 3, 1.0f);
         y += kSheetRowH;
     }
 }
@@ -744,19 +750,29 @@ StyledPanel::StyledPanel (juce::AudioProcessorValueTreeState& s, juce::AudioProc
 
     // ---- the Options sheet: the six firmware-option menus (same parameters as in the plain-slider window) ----
     options.addRow ("Vari-Speed Mode", makeChoice (PheParams::variSpeedMode).box,
-                    "Classic: the usual law, 1x at 2:30. Octave scale: equal knob turns are equal pitch steps (1/128x up to 2x), "
-                    "either both ways from the middle or forward only.");
+                    "How the Vari-Speed knob is turned into tape speed.\n"
+                    "Classic: smooth tape-like speeds, normal speed (1x) at the 2:30 position. Octave scale: every equal turn of the knob "
+                    "is the same musical step, from 1/128x up to 2x; \"both ways\" works on each side of the middle, \"forward only\" uses the whole knob going forwards.");
     options.addRow ("Record Source", makeChoice (PheParams::recordSource).box,
-                    "Mix: records what you hear, as set by Sound On Sound. Input only: always records just the live input.");
+                    "What gets written into the reel while Rec is on.\n"
+                    "Mix: what you hear, which is the live input and the loop blended by Sound On Sound. "
+                    "Input only: just the live input, whatever Sound On Sound is set to.");
     options.addRow ("Organize Timing", makeChoice (PheParams::organizeMode).box,
-                    "At end of gene: a newly chosen splice takes over when the current gene ends. Immediately: as soon as it is chosen.");
+                    "When you hear a different splice after Organize or Shift picks it.\n"
+                    "At end of gene: the gene that is playing finishes first, then the new splice takes over. "
+                    "Immediately: the new splice cuts in the moment it is picked.");
     options.addRow ("Gene Window", makeChoice (PheParams::geneWindow).box,
-                    "Short fades: genes have tiny fades at their edges. Smooth windows: each gene swells up and dies away.");
+                    "The fade on each gene (a gene is one short slice of the reel, played over and over).\n"
+                    "Short fades: a tiny fade at each end to avoid clicks, full level in between. "
+                    "Smooth windows: each gene swells up and dies away over its whole length, which sounds softer, mostly on short genes.");
     options.addRow ("Play Mode", makeChoice (PheParams::playMode).box,
-                    "Classic: Play starts and stops. Momentary: sound only while Play is held. "
-                    "Trigger loop: keeps looping, and Play jumps back to the start.");
+                    "What the Play button does.\n"
+                    "Classic: on = the reel loops; off = the gene in progress finishes, then it stops. Momentary: you hear it only while Play is on; "
+                    "off silences it at once. Trigger loop: always looping; switching Play on jumps back to the start.");
     options.addRow ("Morph Chord", makeChoice (PheParams::morphChord).box,
-                    "What Morph past 2:30 adds: random pitch-ups, or a fixed chord (octaves, major, minor, fifths).");
+                    "What the extra genes do when Morph is turned past 2:30.\n"
+                    "Random pitch-ups: each new gene jumps up by a random amount (kept to the Pitch Scale, if you chose one). "
+                    "The other choices play a fixed chord above the tape's pitch instead: octaves, major, minor or fifths.");
     options.onClose = [this] { showOptions (false); };
     options.setVisible (false);
     addChildComponent (options);
@@ -774,20 +790,26 @@ StyledPanel::StyledPanel (juce::AudioProcessorValueTreeState& s, juce::AudioProc
         addAndMakeVisible (*clockRateBox);
 
         clockSheet.addInfoRow ("Clock Mode  (in the Clock box)",
-                               "Off. Hybrid: Gene Shift while Morph is at 2/1 or lower, Time Stretch above it. Gene Shift: each tick jumps to the next gene. "
-                               "Time Stretch: the clock sets the pace through the splice. Both need a Gene-Size shorter than the whole splice.");
+                               "Turns the clock features on. Everything starts Off.\n"
+                               "Gene Shift: each tick moves on to the next stretch of the splice. Time Stretch: the clock sets how fast you travel through "
+                               "the splice, so it fits the beat. Hybrid: Gene Shift while Morph is 2/1 or lower, Time Stretch above it. "
+                               "Gene Shift and Time Stretch need a Gene-Size shorter than the whole splice.");
         clockSheet.addInfoRow ("Clock Rate  (in the Clock box)",
-                               "How far apart the ticks are, as note lengths of Logic's tempo (2 bars down to 1/32, with triplets). "
-                               "The clock follows Logic's song position; when Logic is stopped it keeps running at the same tempo.");
+                               "How often the clock ticks, as note lengths of Logic's tempo.\n"
+                               "From 2 bars down to 1/32, with triplets. The clock follows Logic's song position; "
+                               "when Logic is stopped it keeps running at the same tempo.");
         clockSheet.addRow ("Clocks per Splice", makeChoice (PheParams::clocksPerSplice).box,
-                           "Time Stretch: how many ticks one trip through the splice lasts. With the rate at 1/4, 4 clocks is one bar. "
-                           "The splice is stretched or squeezed to fit, and Vari-Speed then changes only the pitch.");
+                           "Time Stretch only: how many ticks one trip through the splice lasts.\n"
+                           "With the rate at 1/4, 4 clocks is one bar. The splice is stretched or squeezed to fit, "
+                           "and Vari-Speed then changes only the pitch.");
         clockSheet.addRow ("Play Retrigger", makeChoice (PheParams::retrigger).box,
-                           "Pulls the loop back to the Slide position every chosen number of ticks, so it keeps in step with the song. "
-                           "Off: never. (Switching Play on always starts from Slide.)");
+                           "Keeps the loop in step with the song.\n"
+                           "Every chosen number of ticks the loop jumps back to the Slide position. Off: never. "
+                           "(Switching Play on always starts from Slide.)");
         clockSheet.addRow ("Rec Sync", makeChoice (PheParams::recSync).box,
-                           "On the clock: Rec and Rec New Splice start and stop on the next tick, so a take is a whole number of ticks long and loops in time. "
-                           "The Rec light says WAIT until the tick comes.");
+                           "Makes recordings land on the beat.\n"
+                           "On the clock: Rec and Rec New Splice start and stop on the next tick, so a take is a whole number of ticks long "
+                           "and loops in time. The reel display shows REC WAIT until the tick comes.");
         clockSheet.onClose = [this] { showClockSheet (false); };
         clockSheet.setVisible (false);
         addChildComponent (clockSheet);

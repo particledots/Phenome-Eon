@@ -1,100 +1,100 @@
 # PhenomeEon
 
 An original AU / VST3 effect for Logic Pro, inspired by the feel of a Eurorack granular "reel" module (the
-Make Noise Morphagene). All DSP is our own code; it is not a port or copy of anything, and it is not affiliated
-with Make Noise.
+Make Noise Morphagene): record sound onto a reel, cut it into splices, and play it back as tiny overlapping
+slices ("genes") at any speed, forwards or backwards. All DSP is our own code; it is not a port or copy of
+anything, and it is not affiliated with Make Noise.
 
-Status: **milestone 10 (optional clock features from Logic's tempo): tested in Logic on both Macs, works as described.**
-Milestones 1 to 10 were tested in Logic on both Macs and work.
+**Status: version 1.0.0 (milestone 11: polish, CPU and long-session checks, README).** Built and checked
+automatically; **not yet tested in Logic.** Milestones 1 to 10 (everything in the plugin) were each tested in Logic on
+both test Macs and work. This README is updated once version 1.0.0 has been tested.
 
-Version 0.10.0 (milestone 10, tested, works). Five new controls (32 in all; older projects open with all of them Off, sounding exactly as 0.9.0):
+## First five minutes
 
-- **Clock Mode:** Off / Hybrid / Gene Shift / Time Stretch. Gene Shift: every tick jumps to the next gene. Time Stretch: the clock
-  sets how long one trip through the splice takes, the pitch stays Vari-Speed's. Hybrid: Gene Shift while Morph is at 2/1 or lower,
-  Time Stretch above. These need a Gene-Size shorter than the whole splice (the Clock box says SET GENE if not).
-- **Clock Rate:** 2 bars down to 1/32, with triplets. Follows Logic's song position while Logic plays; keeps running at Logic's tempo
-  when Logic is stopped (120 BPM if no tempo is given).
-- **Clocks per Splice** (Time Stretch), **Play Retrigger** (pull the loop back to Slide every N ticks), **Rec Sync** (Rec and Rec New
-  Splice start and stop on the tick; the display says REC WAIT).
-- In the styled panel: a Clock box in the header (mode, rate, tick light, tempo) and a MORE sheet. In the plain window: five menus.
+1. Install it (see *Getting the plugin* below) and put **PhenomeEon** on an audio track: Audio FX > Audio Units >
+   particledots > PhenomeEon. Press Play in Logic: the plugin only runs while Logic is playing.
+2. Press **REC**, play or sing something into the track, press **REC** again. That first recording becomes the reel
+   (up to 2 minutes 54 seconds) and starts looping. A new PhenomeEon opens with Play on.
+3. Turn **Vari-Speed** (the big knob on the left): the 2:30 position is normal speed, the middle stops the tape, turning
+   left plays backwards. Turn **Gene-Size** to the right to loop a shorter and shorter slice, and **Slide** to move where
+   that slice starts.
+4. Turn **Morph** (the big knob on the right): left of 1/1 leaves gaps between genes, right of it makes them overlap
+   (up to four at once); past 2:30 the genes also jump up in pitch and spread across the stereo picture.
+5. While it loops press **SPLICE** to drop a marker. **SHIFT** or **ORGANIZE** then choose which splice plays.
+   When you like the reel, press **SAVE WAV**: the Logic project stores only a link to that file, never the audio.
 
-Earlier notes (version 0.9.0):
+## The controls
 
-Load WAV, Save WAV and Reel folder buttons now work, in the styled panel and in the plain-slider window. Everything from 0.8.0
-is unchanged.
+| Control | What it does |
+|---|---|
+| **Input Level** (+ gain step -3 / 0 / +6 / +12 dB) | How loud the live input is. 0.0 dB is the starting position. |
+| **Sound On Sound** | Blend of live input and the reel loop, and also what is recorded. Left: live only. Middle: both at full level. Right: loop only. |
+| **Gene-Size** | Left: a gene is the whole splice. Turning right: shorter and shorter genes (the length is a length of time, down to 1 millisecond). |
+| **Slide** | Where in the splice a gene starts (left = the start). |
+| **Vari-Speed** (+ **Pitch Snap**: Off / Steps / Semitones) | Tape speed and direction. 2:30 = 1x forwards, 9:30 = 1x backwards, middle = stopped, about +12 semitones at the far ends and down to -26 on the slow side. Pitch Snap makes it land on notes. |
+| **Morph** (+ **Pitch Scale**: Off + 28 scales) | How genes follow each other: gaps, seamless 1/1, overlaps of two, three and four. Past 2:30 each new gene gets a random pitch-up and stereo place; Pitch Scale keeps those pitch-ups in a scale. |
+| **Organize** | Picks a splice by knob position (the knob is cut into equal zones, one per splice). |
+| **Output Level** | How loud the output is. 0.0 dB is the starting position. |
+| **REC** | Switch. On an empty reel the first recording makes the reel. On a reel with sound it records over the splice you are in, round and round, until switched off (Time Lag Accumulation). |
+| **REC NEW SPLICE** | Records a brand-new splice on the end of the reel; when it stops, the new splice loops. |
+| **SPLICE / SHIFT** | Splice drops a marker at the playhead. Shift selects the next splice (and wraps round). |
+| **PLAY** | The reel loops. Turned off, the gene in progress finishes and it stops. |
+| **DELETE SPLICE MARKER / DELETE ALL MARKERS** | Join the selected splice with the next / make the reel one splice. |
+| **ERASE SPLICE** | Cuts the selected splice out of the reel and closes the gap. |
+| **CLEAR REEL** | Empties the whole reel. |
+| **UNDO / REDO** | One level: undoes the newest edit; pressed again it redoes it. |
+| **LOAD WAV / SAVE WAV / REEL FOLDER** | Reel files: a WAV with the splice markers stored inside (other audio programs show them too). The default folder is `~/Music/PhenomeEon`. |
+| **CLOCK box** and **MORE** | Optional features that follow Logic's tempo (Gene Shift, Time Stretch, Play Retrigger, Rec Sync). Everything starts Off. |
+| **OPTIONS** | Six optional behaviours (Vari-Speed Mode, Record Source, Organize Timing, Gene Window, Play Mode, Morph Chord). The top choice of each is the normal one. |
+| **PLAIN SLIDERS** | A plain slider window with every control, as a fallback. |
 
-- **SAVE WAV:** writes the whole reel as a stereo 32-bit float WAV at the project's sample rate, with the splice markers
-  inside the file (as standard WAV "cue" markers, so other audio programs show them too). The audio is copied a piece at a time
-  while the reel keeps playing; a file is written under a temporary name and renamed, so a failed save never damages an old file.
-- **LOAD WAV:** loads a WAV as the reel (8 / 16 / 24 / 32-bit whole-number or 32 / 64-bit float, mono or stereo, any sample
-  rate; files with more than two channels use the first two). Cue markers in the file become splice markers. A file at another
-  sample rate is converted (markers move with it); a file longer than the reel (2:54) is cut and the status line says so; markers
-  closer than 64 samples are skipped. Loading is one undoable edit (Undo brings the old reel back, Redo the loaded one).
-- **REEL FOLDER:** where Save starts, and where moved files are looked for. Default `~/Music/PhenomeEon`; remembered per computer.
-- **Project links:** after a save or load the reel is linked to its file. The Logic project stores only the link (path, size,
-  fingerprint), never audio. Opening the project loads the reel from the file. If the file was moved, the reel folder (and the
-  folders inside it) is searched for a file of the same size and fingerprint. If the file changed, the new one is loaded and the
-  status line says so. If it is missing the reel stays empty, the link is kept, and the status line says so (in amber). Editing the
-  reel keeps the link and shows "edited since saved: name - Save WAV to keep the changes". A reel that was never saved shows
-  "reel not saved to a file yet - Save WAV to keep it". Clear Reel (an empty reel) drops the link.
-- **Status line:** the footer of the styled panel (and under the title in the plain window) shows what the reel file is doing.
-- **While Logic is stopped:** a save or load waits for audio to run ("waiting for audio to run (press Play in Logic)...").
+All 32 controls can be automated in Logic. The window can be resized (the shape stays 3:2).
 
-Tested in Logic on the M4 Mac mini (macOS Tahoe, Logic 11.2.2) and the Intel Mac (macOS 12.7.8, Logic 10.7.8): everything works as described. What was also checked automatically beforehand: the engine self-tests (638 checks as before, plus 10,400 new
-checks: WAV writing and reading in every format and with damaged files, markers, sample-rate conversion, the hand-over of the
-reel to and from the audio thread at several block sizes with the sound proven identical while a copy is made, Undo / Redo of a
-load, loading and saving a 100-second reel, a sample-rate change in the middle of a job, long random sequences of buttons,
-saves and loads, and the file library with real files: moved, changed and missing files, unwritable folders), also run under a
-memory-error checker with no errors; the preview tool (245 checks, drives the real plugin code: save, project link, reopening,
-missing file); and the GitHub build. The file chooser dialogs were checked by hand in Logic.
+## Things worth knowing
 
-Version 0.8.0 (milestone 8, tested, works). Same styled panel and the same 21 control ids as 0.7.0, plus six
-new menu ids at the end (27 in all). Everything from 0.7.0 works as before while the new menus are left on their first choice.
+- **Buttons act while Logic is playing.** Logic does not run effects while it is stopped, so a button pressed then acts when playback starts.
+- **One reel, up to 2 minutes 54 seconds**, kept in memory at Logic's sample rate (about 67 MB when full at 48 kHz). It is not stored in the Logic project; save it with SAVE WAV (the project keeps a link and finds the file again if you move it into the reel folder). A reel you never saved is gone when the project closes, and the panel says so.
+- **Undo goes one step back**, and a new edit forgets the older step. Undo is refused while recording.
+- **The curves are our own.** Vari-Speed, Gene-Size, Slide and Morph follow the landmarks the Morphagene manual describes (for example 2:30 = normal speed, 1/1 near 9:00) but were drawn and tuned by ear, so they feel similar rather than identical.
+- **Not included:** the hardware's CV inputs and outputs (Logic automation replaces them), MIDI clock or any clock but Logic's tempo, swing, more than one reel, audio stored inside the project.
+- **Sample rates:** tested at 44.1, 48 and 88.2 kHz (and changing between them while running). 96 kHz should work but was not tested and would use about 134 MB for a full reel.
+- Mono and stereo tracks are both supported.
 
-- **ERASE SPLICE** (button): cuts the selected splice out of the reel and closes the gap (the audio after it moves up, the
-  later markers move with it). The splice after the erased one becomes the selected one (after the last splice, the new last
-  one). On a reel of one splice it empties the reel. Refused while recording. Long reels are edited in small steps over a
-  few audio blocks ("BUSY" shows in the status line, silent meanwhile) so Logic never stalls.
-- **UNDO** (button): undoes the newest edit: a recording (first take, Time Lag Accumulation pass or new splice), Splice,
-  Delete Splice Marker, Delete All Markers, Erase Splice, Clear Reel. **One level only**, and pressing it again redoes (the
-  button then reads REDO). Starting a new edit forgets the one before it. Refused while recording; changing the sample rate
-  forgets the history. The undo copy is made a piece at a time just before audio is changed, so recording costs nothing extra.
-- **Time Lag Accumulation polish:** when a pass is laid over audio already on the reel, what is written goes through a gentle
-  limiter (untouched below 0.8, bends towards but never reaches full scale), so many passes pile up without running away.
-  The status line says "REC TLA" while that is happening.
-- **OPTIONS** (button, bottom right of the styled panel; the same six menus are in the plain-slider window). The first choice
-  of each is the normal behaviour:
-  - *Vari-Speed Mode:* Classic / Octave scale (both ways) / Octave scale (forward only): speeds 1/128x to 2x in even
-    musical steps; Pitch Snap still works on top.
-  - *Record Source:* Mix (as set by Sound On Sound) / Input only (always records just the live input).
-  - *Organize Timing:* At end of gene / Immediately.
-  - *Gene Window:* Short fades / Smooth windows (each gene swells up and dies away).
-  - *Play Mode:* Classic / Momentary (sound only while Play is held) / Trigger loop (keeps looping, Play jumps back to the start).
-  - *Morph Chord:* Random pitch-ups / Octave chord / Major / Minor / Fifths (what Morph past 2:30 adds).
-- **When the buttons act:** while Logic is processing audio (playing).
+## What has been checked
 
-What has been checked automatically (before any test in Logic): the engine self-test (638 checks: everything from 0.7.0,
-plus the undo store, erasing in every position and on a long reel in small steps at several block sizes, Undo / Redo of every
-kind of edit and exact restoring of audio and markers, the limiter, each option menu, and long random sequences of every
-button), also run under a memory-error checker with no errors; the preview tool (draws the windows, moves every control,
-drives the real plugin code with audio); and the GitHub build. Tested in Logic on the M4 Mac mini (macOS Tahoe, Logic 11.2.2) and the Intel Mac (macOS 12.7.8, Logic 10.7.8).
+Everything below was run before this version was handed over; "tested in Logic" is listed separately because only that
+is done by hand on the real Macs.
 
-Version 0.7.0 (milestone 7, tested, works): splices (Splice, Shift, Organize, Delete Splice Marker, Delete All Markers, Rec New
-Splice, and recording over a splice staying inside it). Earlier versions: 0.6.0 Morph and Pitch Scale (tested, works); 0.5.0 tape head, genes, Vari-Speed, Pitch Snap (tested, works);
-0.4.0 reel, Rec, Sound On Sound, basic playback (tested, works); 0.3.1 styled panel on the empty build (tested, works); 0.2.0
-empty build with plain sliders (tested, works).
+- **Engine self-tests:** 743 checks (the reel, recording, Sound On Sound, tape speed and Pitch Snap, genes, Morph and Pitch Scale, splices, Erase and Undo, the option menus, the tempo clock) and 10,400 checks of the reel files (WAV formats, damaged files, markers, sample-rate conversion, saving and loading while the sound runs on). All pass, also under a memory-error checker.
+- **Long-session test** (`engine/tests/stress_test.cpp`): simulated audio run faster than real time, with the controls and every button used at random the whole time (including saves, loads, sample-rate changes between 44.1, 48 and 88.2 kHz, buffers from 1 to 65,536 samples, loud and not-a-number input). Two runs of 24 hours, one stereo and one mono, plus several shorter ones, all passed: the output and the reel stayed real numbers, the output never ran away, and memory use stayed level (it moves between about 310 and 440 MB as the sample rate changes, with no upward trend). Five more hours of the same test under a memory-error checker found no errors.
+- **CPU:** on the Linux test computer the engine used 0.15% of one processor core for a plain loop and at most about 0.7% with everything switched on at once (full reel, four genes, random pitch-ups, smooth windows, Time Stretch, recording over the reel). Big edits (Erase, Undo, Save, Load) are done a little at a time sized to the buffer, so no single block uses more than about a quarter of its own time even at a 32-sample buffer. These numbers come from a Linux computer, not from the M4 or the Intel Mac.
+- **Plugin side (preview tool, 392 checks):** all 32 control ids present and unchanged, every control surviving save and reload, the window opened and closed 80 times at different sizes while audio ran, older projects opening with the new features Off, mono, and both windows drawing correctly.
+- **Apple's validator and pluginval:** the build runs `auval` and `pluginval` (strictness level 5, AU and VST3) on every build. Version 0.10.0 passed all of them; the result for 1.0.0 is in the build's log.
+- **Tested in Logic on both Macs** (M4 Mac mini, macOS Tahoe, Logic 11.2.2; Intel Mac, macOS 12.7.8, Logic 10.7.8): milestones 1 to 10. Version 1.0.0 is waiting for its test.
+
+## What changed in 1.0.0
+
+No change to how it sounds: with the controls where they were, the audio is the same as 0.10.0.
+
+- **Options and Clock sheets rewritten in plainer words:** each row now has a one-line "what this is for" followed by what each choice does.
+- **Big edits sized to the buffer:** Erase Splice, Undo, Save and Load now take smaller slices on small audio buffers (32 or 64 samples), so they cannot overrun a block. Before, one slice cost about a millisecond whatever the buffer size.
+- **New checks:** the long-session test above is part of the build (a short version runs every time), and the preview tool gained the plugin-side checks.
+- Earlier versions' detailed notes are in `CHANGELOG.md`.
 
 ## Folders
 
 | Folder | What it is |
 |---|---|
-| `engine/` | The audio engine. Plain C++, no plugin code. This is the part reused for later plugins. `engine/include/phe/core/` holds the generic parts (scales, level helpers, the tape-speed curve and Pitch Snap, the waveform picture); `Reel.h`, `GenePlayer.h` and `Engine.h` are the reel, the tape head with its genes, and the engine. `core/Morph.h` is the Morph curve and the random pitch-up / Pitch Scale choice; `core/SpliceMap.h` is the list of splice markers and the Organize / Shift selection rules (reusable). |
+| `engine/` | The audio engine. Plain C++, no plugin code. This is the part reused for later plugins. `engine/include/phe/core/` holds the generic parts (scales, level helpers, the tape-speed curve and Pitch Snap, the waveform picture, the undo store, the splice list, the tempo clock, reel files); `Reel.h`, `GenePlayer.h` and `Engine.h` are the reel, the tape head with its genes, and the engine. `engine/tests/` holds the self-tests and the long-session test. |
 | `plugin/` | The plugin wrapper: what Logic sees, the list of controls, and the windows (styled panel and plain sliders). `plugin/Fonts/` holds the panel fonts and their licences; `plugin/preview/` is an optional tool that draws the panel to pictures and checks the controls (not part of the plugin). |
 | `tools/install/` | The generic installer used by all the "Unofficial" plugins. |
 | `.github/workflows/` | The automatic build. |
 
 The wrapper hands the engine the control values (one plain `Params` list) and the audio; the engine hands audio back.
 Nothing in `engine/` knows about sliders or Logic.
+
+To run the long-session test yourself: build the engine (`cmake -S . -B build -DPHE_BUILD_PLUGIN=OFF && cmake --build build`), then
+`build/engine/phe_stress_test bench` (CPU) or `build/engine/phe_stress_test soak 24` (24 hours of simulated audio).
 
 ## Getting the plugin
 

@@ -133,8 +133,8 @@ class OptionsSheet : public juce::Component
 {
 public:
     explicit OptionsSheet (juce::String title = "OPTIONS",
-                           juce::String subtitle = "The first choice of every menu is the normal behaviour.",
-                           int height = 640);
+                           juce::String subtitle = "Optional behaviours. The top choice of each menu is the normal one; changes take effect at once.",
+                           int height = 740);
 
     // Adds one row: a title, the menu (owned by the panel) and a line explaining what the choices do.
     void addRow (const juce::String& title, juce::ComboBox& box, const juce::String& explanation);
@@ -224,7 +224,7 @@ private:
 
     // The clock features (milestone 10): a box in the header with the mode and rate menus and a light that blinks at every tick,
     // and a sheet (MORE) with the other three menus and the explanations.
-    OptionsSheet clockSheet { "CLOCK", "Logic's tempo drives these. Everything starts Off.", 508 };
+    OptionsSheet clockSheet { "CLOCK", "Logic's tempo drives these. Everything starts Off.", 630 };
     juce::ComboBox* clockModeBox = nullptr;
     juce::ComboBox* clockRateBox = nullptr;
     juce::TextButton clockMore { "MORE" };

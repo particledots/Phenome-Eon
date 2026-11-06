@@ -23,4 +23,10 @@ if(PHE_BUILD_TESTS)
     add_executable(phe_reelfile_test tests/reelfile_test.cpp)
     target_link_libraries(phe_reelfile_test PRIVATE phe_engine)
     add_test(NAME reelfile COMMAND phe_reelfile_test)
+
+    # Milestone 11: CPU benchmark and long-session soak test. 'phe_stress_test quick' is part of the normal build's checks;
+    # 'phe_stress_test bench' and 'phe_stress_test soak HOURS' are run by hand.
+    add_executable(phe_stress_test tests/stress_test.cpp)
+    target_link_libraries(phe_stress_test PRIVATE phe_engine)
+    add_test(NAME stress_quick COMMAND phe_stress_test quick)
 endif()

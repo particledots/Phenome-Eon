@@ -1069,6 +1069,119 @@ int main (int argc, char** argv)
         work.deleteRecursively();
     }
 
+    // ---------------- milestone 11: the ids, the window coming and going, saving all controls, mono ----------------
+    {
+        // The 32 control ids Logic stores in projects and automation. None may ever be renamed or removed.
+        const char* expectedIds[] = {
+            "inputLevel", "soundOnSound", "geneSize", "slide", "variSpeed", "morph", "organize", "outputLevel",
+            "inputGain", "pitchSnap", "pitchScale",
+            "rec", "recNewSplice", "splice", "shift", "play", "deleteMarker", "deleteAllMarkers", "eraseSplice", "clearReel", "undo",
+            "variSpeedMode", "recordSource", "organizeMode", "geneWindow", "playMode", "morphChord",
+            "clockMode", "clockRate", "clocksPerSplice", "retrigger", "recSync" };
+        PhenomeEonProcessor idProc;
+        int found = 0;
+        for (auto* id : expectedIds)
+            if (idProc.getValueTreeState().getParameter (id) != nullptr)
+                ++found;
+        expect (found == 32, "M11: all 32 control ids exist (found " + juce::String (found) + ")");
+        expect (idProc.getParameters().size() == 32, "M11: exactly 32 controls (" + juce::String (idProc.getParameters().size()) + ")");
+
+        // Every control saved with a random value comes back the same from a saved project.
+        {
+            juce::Random rnd (11);
+            for (int round = 0; round < 25; ++round)
+            {
+                PhenomeEonProcessor a;
+                for (auto* param : a.getParameters())
+                {
+                    // Buttons are on or off; menus and knobs take any position.
+                    const bool isButton = dynamic_cast<juce::AudioParameterBool*> (param) != nullptr;
+                    param->setValueNotifyingHost (isButton ? (rnd.nextBool() ? 1.0f : 0.0f) : rnd.nextFloat());
+                }
+                const auto before = snapshotParams (a);
+                juce::MemoryBlock project;
+                a.getStateInformation (project);
+                PhenomeEonProcessor b;
+                b.setStateInformation (project.getData(), (int) project.getSize());
+                const auto after = snapshotParams (b);
+                bool same = before.size() == after.size();
+                juce::String differing;
+                for (auto& [id, v] : before)
+                    if (std::abs (after.at (id) - v) > 1.0e-5f)
+                    {
+                        same = false;
+                        differing << " " << id << " (" << v << " -> " << after.at (id) << ")";
+                    }
+                expect (same, "M11: all 32 controls survive save and reload (round " + juce::String (round) + ")" + differing);
+            }
+        }
+
+        // The window opened and closed many times, at different sizes, with audio running, switching windows and sheets.
+        {
+            PhenomeEonProcessor live;
+            live.setPlayConfigDetails (2, 2, 48000.0, 512);
+            live.prepareToPlay (48000.0, 512);
+            long long clock = 0;
+            feed (live, clock, 6);
+            const auto untouched = snapshotParams (live);
+            int sheetOpens = 0;
+            for (int i = 0; i < 80; ++i)
+            {
+                {
+                    PhenomeEonEditor editor (live);
+                    const int w = 840 + (i * 97) % 960;
+                    editor.setSize (w, w * 2 / 3);
+                    editor.showView (i % 3 == 0 ? PhenomeEonEditor::View::plain : PhenomeEonEditor::View::styled);
+                    letWindowThreadRun (15);
+                    feed (live, clock, 2);
+                    std::vector<StyledPanel*> panels;
+                    collect (editor, panels);
+                    if (! panels.empty() && editor.getView() == PhenomeEonEditor::View::styled)
+                    {
+                        if (i % 2 == 0) { panels[0]->showOptions (true); ++sheetOpens; }
+                        if (i % 5 == 0) { panels[0]->showClockSheet (true); ++sheetOpens; }
+                    }
+                    editor.showView (PhenomeEonEditor::View::styled);
+                    letWindowThreadRun (10);
+                    auto image = editor.createComponentSnapshot (editor.getLocalBounds(), true, 1.0f);
+                    expect (image.getWidth() > 100, "M11: the window can be drawn");
+                }
+                feed (live, clock, 1);
+            }
+            const auto afterwards = snapshotParams (live);
+            expect (changedBetween (untouched, afterwards).empty(), "M11: opening and closing windows 80 times changed no control");
+            expect (sheetOpens > 20, "M11: sheets were opened during the cycles");
+        }
+
+        // Mono in, mono out (the plugin accepts it): sound comes out, nothing is not-a-number.
+        {
+            PhenomeEonProcessor mono;
+            mono.setPlayConfigDetails (1, 1, 44100.0, 256);
+            mono.prepareToPlay (44100.0, 256);
+            juce::AudioBuffer<float> buffer (1, 256);
+            juce::MidiBuffer midi;
+            bool allNumbers = true;
+            float loudest = 0.0f;
+            setParameter (mono, PheParams::rec, 1.0f);
+            for (int b = 0; b < 400; ++b)
+            {
+                for (int i = 0; i < 256; ++i)
+                    buffer.setSample (0, i, 0.4f * std::sin (0.05f * (float) (b * 256 + i)));
+                if (b == 200)
+                    setParameter (mono, PheParams::rec, 0.0f);
+                mono.processBlock (buffer, midi);
+                for (int i = 0; i < 256; ++i)
+                {
+                    const float v = buffer.getSample (0, i);
+                    if (! std::isfinite (v)) allNumbers = false;
+                    loudest = std::max (loudest, std::abs (v));
+                }
+            }
+            expect (allNumbers, "M11: mono run gives only real numbers");
+            expect (loudest > 0.05f, "M11: mono run gives sound (loudest " + juce::String (loudest) + ")");
+        }
+    }
+
     std::cout << "preview checks: " << (checks - failures) << " passed, " << failures << " failed" << std::endl;
     return failures == 0 ? 0 : 1;
 }
