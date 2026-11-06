@@ -4,7 +4,7 @@ The detailed notes for each milestone before version 1.0.0, moved here from the 
 tested in Logic on both test Macs (the M4 Mac mini and the Intel Mac) and worked as described, except where an entry says otherwise.
 The README describes the current version.
 
-Version 1.0.1 (built; **waiting for its test in Logic on both Macs**). One small visual change, nothing else:
+Version 1.0.1 (tested in Logic on both Macs, works). One small visual change, nothing else:
 
 - **Vari-Speed colour:** the Vari-Speed knob's arc and its read-out are now green while the tape plays forwards, red while it plays
   backwards and grey while it is stopped (before, always orange), like the real module. The colour comes from the knob position

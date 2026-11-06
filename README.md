@@ -5,9 +5,8 @@ Make Noise Morphagene): record sound onto a reel, cut it into splices, and play 
 slices ("genes") at any speed, forwards or backwards. All DSP is our own code; it is not a port or copy of
 anything, and it is not affiliated with Make Noise.
 
-**Status: version 1.0.1 (a small visual change on top of 1.0.0).** Built and checked automatically; **1.0.1 has not been
-tested in Logic yet.** Version 1.0.0 (milestone 11: polish, CPU and long-session checks, README) was **tested in Logic on both
-test Macs (M4 Mac mini and Intel Mac) and works**, and milestones 1 to 10 were each tested on both Macs and work too.
+**Status: version 1.0.1 (a small visual change on top of 1.0.0), tested in Logic on both test Macs (M4 Mac mini and Intel Mac): it works.**
+Version 1.0.0 (milestone 11: polish, CPU and long-session checks, README) and milestones 1 to 10 were each tested on both Macs and work too.
 
 ## First five minutes
 
@@ -77,6 +76,7 @@ is done by hand on the real Macs.
 Only the look of the Vari-Speed knob. The sound, the 32 controls and old projects are unchanged.
 
 - **Vari-Speed colour:** the knob's arc and read-out are **green** while the tape plays forwards, **red** backwards and **grey** when stopped (before, always orange), like the real module. It follows the knob position (and Logic automation, and the Vari-Speed Mode menu), not the Play button. In "Octave scale forward only" mode it is never red. The other knobs stay orange; the plain-slider window has no colours and is unchanged.
+- **Tested:** on both Macs the colours were right in all three Vari-Speed modes, with Pitch Snap on, with the mode menu changed and with automation, the other knobs stayed orange, and an old project opened as before.
 - **New checks:** the preview tool now checks the colour rule in all three Vari-Speed modes and with Pitch Snap on, and counts the green, red and orange pixels actually drawn.
 
 ## What changed in 1.0.0
