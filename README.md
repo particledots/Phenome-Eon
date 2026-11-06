@@ -5,9 +5,9 @@ Make Noise Morphagene): record sound onto a reel, cut it into splices, and play 
 slices ("genes") at any speed, forwards or backwards. All DSP is our own code; it is not a port or copy of
 anything, and it is not affiliated with Make Noise.
 
-**Status: version 1.0.0 (milestone 11: polish, CPU and long-session checks, README).** Built and checked
-automatically, and **tested in Logic on both test Macs (M4 Mac mini and Intel Mac): it works.** Milestones 1 to 10
-were each tested in Logic on both Macs and work too.
+**Status: version 1.0.1 (a small visual change on top of 1.0.0).** Built and checked automatically; **1.0.1 has not been
+tested in Logic yet.** Version 1.0.0 (milestone 11: polish, CPU and long-session checks, README) was **tested in Logic on both
+test Macs (M4 Mac mini and Intel Mac) and works**, and milestones 1 to 10 were each tested on both Macs and work too.
 
 ## First five minutes
 
@@ -31,7 +31,7 @@ were each tested in Logic on both Macs and work too.
 | **Sound On Sound** | Blend of live input and the reel loop, and also what is recorded. Left: live only. Middle: both at full level. Right: loop only. |
 | **Gene-Size** | Left: a gene is the whole splice. Turning right: shorter and shorter genes (the length is a length of time, down to 1 millisecond). |
 | **Slide** | Where in the splice a gene starts (left = the start). |
-| **Vari-Speed** (+ **Pitch Snap**: Off / Steps / Semitones) | Tape speed and direction. 2:30 = 1x forwards, 9:30 = 1x backwards, middle = stopped, about +12 semitones at the far ends and down to -26 on the slow side. Pitch Snap makes it land on notes. |
+| **Vari-Speed** (+ **Pitch Snap**: Off / Steps / Semitones) | Tape speed and direction. 2:30 = 1x forwards, 9:30 = 1x backwards, middle = stopped, about +12 semitones at the far ends and down to -26 on the slow side. Pitch Snap makes it land on notes. The knob's arc and read-out are green going forwards, red going backwards, grey when stopped. |
 | **Morph** (+ **Pitch Scale**: Off + 28 scales) | How genes follow each other: gaps, seamless 1/1, overlaps of two, three and four. Past 2:30 each new gene gets a random pitch-up and stereo place; Pitch Scale keeps those pitch-ups in a scale. |
 | **Organize** | Picks a splice by knob position (the knob is cut into equal zones, one per splice). |
 | **Output Level** | How loud the output is. 0.0 dB is the starting position. |
@@ -68,9 +68,16 @@ is done by hand on the real Macs.
 - **Engine self-tests:** 743 checks (the reel, recording, Sound On Sound, tape speed and Pitch Snap, genes, Morph and Pitch Scale, splices, Erase and Undo, the option menus, the tempo clock) and 10,400 checks of the reel files (WAV formats, damaged files, markers, sample-rate conversion, saving and loading while the sound runs on). All pass, also under a memory-error checker.
 - **Long-session test** (`engine/tests/stress_test.cpp`): simulated audio run faster than real time, with the controls and every button used at random the whole time (including saves, loads, sample-rate changes between 44.1, 48 and 88.2 kHz, buffers from 1 to 65,536 samples, loud and not-a-number input). Two runs of 24 hours, one stereo and one mono, plus several shorter ones, all passed: the output and the reel stayed real numbers, the output never ran away, and memory use stayed level (it moves between about 310 and 440 MB as the sample rate changes, with no upward trend). Five more hours of the same test under a memory-error checker found no errors.
 - **CPU:** on the Linux test computer the engine used 0.15% of one processor core for a plain loop and at most about 0.7% with everything switched on at once (full reel, four genes, random pitch-ups, smooth windows, Time Stretch, recording over the reel). Big edits (Erase, Undo, Save, Load) are done a little at a time sized to the buffer, so no single block uses more than about a quarter of its own time even at a 32-sample buffer. These numbers come from a Linux computer, not from the M4 or the Intel Mac.
-- **Plugin side (preview tool, 392 checks):** all 32 control ids present and unchanged, every control surviving save and reload, the window opened and closed 80 times at different sizes while audio ran, older projects opening with the new features Off, mono, and both windows drawing correctly.
+- **Plugin side (preview tool, 464 checks):** all 32 control ids present and unchanged, every control surviving save and reload, the window opened and closed 80 times at different sizes while audio ran, older projects opening with the new features Off, mono, and both windows drawing correctly.
 - **Apple's validator and pluginval:** the build runs `auval` and `pluginval` (strictness level 5, AU and VST3) on every build. Version 1.0.0 passed all of them (the results are in the build's log).
 - **Tested in Logic on both Macs** (M4 Mac mini, macOS Tahoe, Logic 11.2.2; Intel Mac, macOS 12.7.8, Logic 10.7.8): milestones 1 to 11. For version 1.0.0 on both Macs: it installs and the footer reads v1.0.0; an old 0.10.0 project opens and sounds the same; the new Options and Clock wording is clearer; there is no crackle from Erase, Undo, Save or Load at small buffers; a one-hour loop stays at about 7% on Logic's CPU meter with steady memory; and a real Morphagene reel from freesound.org loads with all its splices.
+
+## What changed in 1.0.1
+
+Only the look of the Vari-Speed knob. The sound, the 32 controls and old projects are unchanged.
+
+- **Vari-Speed colour:** the knob's arc and read-out are **green** while the tape plays forwards, **red** backwards and **grey** when stopped (before, always orange), like the real module. It follows the knob position (and Logic automation, and the Vari-Speed Mode menu), not the Play button. In "Octave scale forward only" mode it is never red. The other knobs stay orange; the plain-slider window has no colours and is unchanged.
+- **New checks:** the preview tool now checks the colour rule in all three Vari-Speed modes and with Pitch Snap on, and counts the green, red and orange pixels actually drawn.
 
 ## What changed in 1.0.0
 

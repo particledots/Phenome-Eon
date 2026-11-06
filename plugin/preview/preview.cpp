@@ -1182,6 +1182,135 @@ int main (int argc, char** argv)
         }
     }
 
+    // ---------------- version 1.0.1: the Vari-Speed arc and read-out are green forwards, red backwards, grey stopped ----------------
+    {
+        const auto green = PheStyle::tapeForward, red = PheStyle::tapeBackward, grey = PheStyle::tapeStopped, orange = PheStyle::amber;
+
+        // How many pixels of the picture are (nearly) this colour.
+        auto countNear = [] (const juce::Image& img, juce::Colour c)
+        {
+            int n = 0;
+            for (int y = 0; y < img.getHeight(); ++y)
+                for (int x = 0; x < img.getWidth(); ++x)
+                {
+                    const auto p = img.getPixelAt (x, y);
+                    if (std::abs ((int) p.getRed() - (int) c.getRed()) < 14
+                        && std::abs ((int) p.getGreen() - (int) c.getGreen()) < 14
+                        && std::abs ((int) p.getBlue() - (int) c.getBlue()) < 14)
+                        ++n;
+                }
+            return n;
+        };
+        auto setChoice = [] (PhenomeEonProcessor& p, const char* id, int index)
+        {
+            if (auto* prm = p.getValueTreeState().getParameter (id))
+                prm->setValueNotifyingHost (prm->convertTo0to1 ((float) index));
+        };
+
+        PhenomeEonProcessor proc;
+        PhenomeEonEditor editor (proc);
+        editor.showView (PhenomeEonEditor::View::styled);
+        editor.setSize (1200, 800);
+        letWindowThreadRun (150);
+
+        std::vector<KnobCard*> cards;
+        collect (editor, cards);
+        KnobCard* vari = nullptr;
+        KnobCard* morph = nullptr;
+        for (auto* c : cards)
+        {
+            if (juce::String (c->getParameterId()) == "variSpeed") vari = c;
+            if (juce::String (c->getParameterId()) == "morph") morph = c;
+        }
+        expect (vari != nullptr && morph != nullptr, "1.0.1: found the Vari-Speed and Morph knob cards");
+
+        if (vari != nullptr && morph != nullptr)
+        {
+            // 'want' is which colour the knob must have: 0 green, 1 red, 2 grey
+            auto checkKnob = [&] (const juce::String& what, float knob, int want)
+            {
+                setParameter (proc, PheParams::variSpeed, knob);
+                letWindowThreadRun (120);
+                const juce::Colour wanted = want == 0 ? green : (want == 1 ? red : grey);
+                expect (vari->getAccentColour() == wanted, "1.0.1: " + what + ": colour rule gives the right colour");
+
+                const auto picture = vari->createComponentSnapshot (vari->getLocalBounds(), true, 1.0f);
+                const int g = countNear (picture, green), r = countNear (picture, red), o = countNear (picture, orange);
+                expect (o < 5, "1.0.1: " + what + ": no orange left on the Vari-Speed knob (" + juce::String (o) + " pixels)");
+                if (want == 0) expect (g > 15 && r < 5, "1.0.1: " + what + ": drawn green, not red (" + juce::String (g) + " green, " + juce::String (r) + " red)");
+                if (want == 1) expect (r > 15 && g < 5, "1.0.1: " + what + ": drawn red, not green (" + juce::String (g) + " green, " + juce::String (r) + " red)");
+                if (want == 2) expect (g < 5 && r < 5, "1.0.1: " + what + ": drawn grey, no green or red (" + juce::String (g) + " green, " + juce::String (r) + " red)");
+            };
+
+            // Classic mode
+            setChoice (proc, PheParams::variSpeedMode, 0);
+            checkKnob ("classic, 2:30 (1x forward)", 0.75f, 0);
+            checkKnob ("classic, 9:30 (1x backward)", 0.25f, 1);
+            checkKnob ("classic, middle (stopped)", 0.5f, 2);
+            checkKnob ("classic, far right", 1.0f, 0);
+            checkKnob ("classic, far left", 0.0f, 1);
+            checkKnob ("classic, just right of middle", 0.6f, 0);
+            checkKnob ("classic, just left of middle", 0.4f, 1);
+
+            save (editor, outDir.getChildFile ("styled_vari_backward.png"), 1654.0f / 1200.0f);   // knob at 0.4: slow backwards = red
+            setParameter (proc, PheParams::variSpeed, 0.75f);
+            letWindowThreadRun (120);
+            save (editor, outDir.getChildFile ("styled_vari_forward.png"), 1654.0f / 1200.0f);
+            setParameter (proc, PheParams::variSpeed, 0.5f);
+            letWindowThreadRun (120);
+            save (editor, outDir.getChildFile ("styled_vari_stopped.png"), 1654.0f / 1200.0f);
+
+            // With Pitch Snap on the colour is the same
+            setChoice (proc, PheParams::pitchSnap, 2);
+            checkKnob ("classic + Pitch Snap Semitones, 9:30", 0.25f, 1);
+            checkKnob ("classic + Pitch Snap Semitones, 2:30", 0.75f, 0);
+            setChoice (proc, PheParams::pitchSnap, 1);
+            checkKnob ("classic + Pitch Snap Steps, 9:30", 0.25f, 1);
+            checkKnob ("classic + Pitch Snap Steps, 2:30", 0.75f, 0);
+            setChoice (proc, PheParams::pitchSnap, 0);
+
+            // Octave scale, both ways
+            setChoice (proc, PheParams::variSpeedMode, 1);
+            checkKnob ("octave both ways, left of middle", 0.25f, 1);
+            checkKnob ("octave both ways, middle (stopped)", 0.5f, 2);
+            checkKnob ("octave both ways, right of middle", 0.75f, 0);
+
+            // Octave scale, forward only: never red; the far left is the stop
+            setChoice (proc, PheParams::variSpeedMode, 2);
+            checkKnob ("forward only, far left (stopped)", 0.0f, 2);
+            checkKnob ("forward only, a quarter", 0.25f, 0);
+            checkKnob ("forward only, middle", 0.5f, 0);
+            checkKnob ("forward only, far right", 1.0f, 0);
+
+            // Changing the menu while the knob stays put changes the colour (the window notices by itself)
+            setChoice (proc, PheParams::variSpeedMode, 0);
+            checkKnob ("back to classic, 9:30", 0.25f, 1);
+            setChoice (proc, PheParams::variSpeedMode, 2);
+            letWindowThreadRun (150);
+            {
+                const auto picture = vari->createComponentSnapshot (vari->getLocalBounds(), true, 1.0f);
+                expect (countNear (picture, green) > 15 && countNear (picture, red) < 5,
+                        "1.0.1: switching the menu to forward only turns a red knob green without touching it");
+            }
+            setChoice (proc, PheParams::variSpeedMode, 0);
+            letWindowThreadRun (150);
+            {
+                const auto picture = vari->createComponentSnapshot (vari->getLocalBounds(), true, 1.0f);
+                expect (countNear (picture, red) > 15 && countNear (picture, green) < 5,
+                        "1.0.1: switching the menu back to classic turns it red again");
+            }
+
+            // The other knobs stay orange
+            const auto morphPicture = morph->createComponentSnapshot (morph->getLocalBounds(), true, 1.0f);
+            expect (morph->getAccentColour() == orange, "1.0.1: Morph keeps its orange rule");
+            expect (countNear (morphPicture, orange) > 30 && countNear (morphPicture, green) < 5 && countNear (morphPicture, red) < 5,
+                    "1.0.1: Morph is still drawn orange");
+            for (auto* c : cards)
+                if (c != vari)
+                    expect (c->getAccentColour() == orange, "1.0.1: " + juce::String (c->getParameterId()) + " is still orange");
+        }
+    }
+
     std::cout << "preview checks: " << (checks - failures) << " passed, " << failures << " failed" << std::endl;
     return failures == 0 ? 0 : 1;
 }

@@ -82,7 +82,12 @@ void PanelLookAndFeel::drawRotarySlider (juce::Graphics& g, int x, int y, int wi
     const float angle = startAngle + pos * (endAngle - startAngle);
     const bool hot = slider.isMouseOverOrDragging() && slider.isEnabled();
 
-    // Track (the full sweep), then the amber arc up to the current value
+    // The arc is amber, unless this knob has asked for another colour (Vari-Speed: green / red / grey).
+    juce::Colour arcColour = amber;
+    if (slider.getProperties().contains (arcColourProperty))
+        arcColour = juce::Colour ((juce::uint32) (juce::int64) slider.getProperties()[arcColourProperty]);
+
+    // Track (the full sweep), then the coloured arc up to the current value
     juce::Path track;
     track.addCentredArc (centre.x, centre.y, arcRadius, arcRadius, 0.0f, startAngle, endAngle, true);
     g.setColour (juce::Colour (0xff2c3036));
@@ -92,7 +97,7 @@ void PanelLookAndFeel::drawRotarySlider (juce::Graphics& g, int x, int y, int wi
     {
         juce::Path value;
         value.addCentredArc (centre.x, centre.y, arcRadius, arcRadius, 0.0f, startAngle, angle, true);
-        g.setColour (hot ? amber.brighter (0.15f) : amber);
+        g.setColour (hot ? arcColour.brighter (0.15f) : arcColour);
         g.strokePath (value, juce::PathStrokeType (arcThickness, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
     }
 

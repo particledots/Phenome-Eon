@@ -108,7 +108,15 @@ public:
 
     const char* getParameterId() const { return parameterId; }
 
+    // Optional: gives the knob's arc and read-out a colour that depends on the knob position (amber when not set).
+    // Used by Vari-Speed (version 1.0.1). refreshAccent() redraws after something other than the knob changed it.
+    void setAccent (std::function<juce::Colour (double)> colourFor);
+    void refreshAccent();
+    juce::Colour getAccentColour() const;            // the colour in use right now (amber when no rule is set)
+
 private:
+    void applyAccentToSlider();
+
     struct Note  { juce::String text; juce::Rectangle<int> area; juce::Justification justification; };
     struct Extra { juce::Component* component; juce::Rectangle<int> area; };
 
@@ -116,6 +124,7 @@ private:
     juce::String title;
     Size size;
     std::function<juce::String (double)> format;
+    std::function<juce::Colour (double)> accent;       // empty = amber
     std::vector<Note> notes;
     std::vector<Extra> extras;
 

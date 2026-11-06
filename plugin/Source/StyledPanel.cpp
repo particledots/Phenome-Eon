@@ -109,6 +109,16 @@ namespace
         return juce::String (r.rate > 0.0f ? "+" : "-") + juce::String (std::fabs (r.rate), 2) + "x";
     }
 
+    // Vari-Speed colour (version 1.0.1): green while the tape plays forwards, red backwards, grey when stopped.
+    // It is worked out from the knob with the same function the sound uses, so it always matches what is heard.
+    juce::Colour variSpeedColour (double value, int pitchSnap, int mode)
+    {
+        const auto r = phe::dsp::variSpeed ((float) value, pitchSnap, mode);
+        if (r.stopped)
+            return tapeStopped;
+        return r.rate < 0.0f ? tapeBackward : tapeForward;
+    }
+
     // Morph read-out: "gap 30%" (silence between genes, as a share of a gene), "1/1" (seamless), "2.4/1" (genes at once),
     // and past 2:30 also the highest random pitch-up in semitones ("3.6/1 +12st").
     juce::String morphText (double value)
@@ -561,9 +571,36 @@ KnobCard::KnobCard (juce::AudioProcessorValueTreeState& state, const char* id, c
     slider.setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
     slider.setRotaryParameters (juce::MathConstants<float>::pi * 1.25f, juce::MathConstants<float>::pi * 2.75f, true);
     slider.setTitle (cardTitle);
-    slider.onValueChange = [this] { repaint(); };
+    slider.onValueChange = [this] { applyAccentToSlider(); repaint(); };
     addAndMakeVisible (slider);
     attachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (state, id, slider);
+}
+
+void KnobCard::setAccent (std::function<juce::Colour (double)> colourFor)
+{
+    accent = std::move (colourFor);
+    applyAccentToSlider();
+    repaint();
+}
+
+void KnobCard::refreshAccent()
+{
+    applyAccentToSlider();
+    repaint();
+}
+
+juce::Colour KnobCard::getAccentColour() const
+{
+    return accent ? accent (slider.getValue()) : amber;
+}
+
+// The dial itself is drawn by the look-and-feel, which reads the arc colour from the slider's properties.
+void KnobCard::applyAccentToSlider()
+{
+    if (accent)
+        slider.getProperties().set (arcColourProperty, (juce::int64) accent (slider.getValue()).getARGB());
+    else
+        slider.getProperties().remove (arcColourProperty);
 }
 
 void KnobCard::addNote (const juce::String& text, juce::Rectangle<int> area, juce::Justification j)
@@ -607,7 +644,9 @@ void KnobCard::paint (juce::Graphics& g)
     g.setFont (sans (16.0f, true, 0.06f));
     g.drawText (title, juce::Rectangle<int> (0, 9, getWidth(), 22), juce::Justification::centred, false);
 
-    g.setColour (amber);
+    // Make sure the dial (painted after this card) has the colour for the current position, then draw the read-out in it.
+    applyAccentToSlider();
+    g.setColour (getAccentColour());
     g.setFont (mono (18.0f));
     g.drawText (format (slider.getValue()), juce::Rectangle<int> (0, 163, getWidth(), 24), juce::Justification::centred, false);
 
@@ -718,6 +757,12 @@ StyledPanel::StyledPanel (juce::AudioProcessorValueTreeState& s, juce::AudioProc
                                const int mode = juce::jlimit (0, 2, (int) std::lround (state.getRawParameterValue (PheParams::variSpeedMode)->load()));
                                return variSpeedText (v, snap, mode);
                            });
+    vari.setAccent ([this] (double v)
+                    {
+                        const int snap = juce::jlimit (0, 2, (int) std::lround (state.getRawParameterValue (PheParams::pitchSnap)->load()));
+                        const int mode = juce::jlimit (0, 2, (int) std::lround (state.getRawParameterValue (PheParams::variSpeedMode)->load()));
+                        return variSpeedColour (v, snap, mode);
+                    });
     auto& morph = addKnob (PheParams::morph,     "MORPH",      KnobCard::Size::large, morphText);
     auto& organize = addKnob (PheParams::organize, "ORGANIZE", KnobCard::Size::small,
                               [&engine] (double v) { return organizeText (v, engine); });
@@ -971,7 +1016,7 @@ void StyledPanel::timerCallback()
         variCard->setNoteText (1, variMode == 0 ? "middle = stop; 2:30 = 1x"
                                                 : (variMode == 1 ? "middle = stop; ends = 2x"
                                                                  : "left = stop; right = 2x"));
-        variCard->repaint();
+        variCard->refreshAccent();      // the mode decides which side is "backwards" or "stopped", so the colour may change
     }
 
     // The Clock box: tempo, what the clock is doing, and a light that blinks at every tick.

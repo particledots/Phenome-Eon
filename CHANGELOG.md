@@ -1,7 +1,16 @@
 # PhenomeEon: version history
 
 The detailed notes for each milestone before version 1.0.0, moved here from the README unchanged. Every version listed here was
-tested in Logic on both test Macs (the M4 Mac mini and the Intel Mac) and worked as described. The README describes the current version.
+tested in Logic on both test Macs (the M4 Mac mini and the Intel Mac) and worked as described, except where an entry says otherwise.
+The README describes the current version.
+
+Version 1.0.1 (built; **waiting for its test in Logic on both Macs**). One small visual change, nothing else:
+
+- **Vari-Speed colour:** the Vari-Speed knob's arc and its read-out are now green while the tape plays forwards, red while it plays
+  backwards and grey while it is stopped (before, always orange), like the real module. The colour comes from the knob position
+  through the same function the sound uses, so it always matches what you hear; it follows Logic automation and the Vari-Speed Mode
+  menu ("Octave scale forward only" never shows red; there the far left is the stop). The other seven knobs stay orange, the plain-slider
+  window is unchanged, and the sound and the 32 controls are unchanged.
 
 Version 0.10.0 (milestone 10, tested, works). Five new controls (32 in all; older projects open with all of them Off, sounding exactly as 0.9.0):
 
