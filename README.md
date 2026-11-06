@@ -4,10 +4,10 @@ An original AU / VST3 effect for Logic Pro, inspired by the feel of a Eurorack g
 Make Noise Morphagene). All DSP is our own code; it is not a port or copy of anything, and it is not affiliated
 with Make Noise.
 
-Status: **milestone 10 (optional clock features from Logic's tempo): built and checked by the automatic tests, NOT yet tested by Bryn in Logic.**
-Milestones 1 to 9 were tested in Logic on both Macs and work.
+Status: **milestone 10 (optional clock features from Logic's tempo): tested in Logic on both Macs, works as described.**
+Milestones 1 to 10 were tested in Logic on both Macs and work.
 
-Version 0.10.0 (milestone 10). Five new controls (32 in all; older projects open with all of them Off, sounding exactly as 0.9.0):
+Version 0.10.0 (milestone 10, tested, works). Five new controls (32 in all; older projects open with all of them Off, sounding exactly as 0.9.0):
 
 - **Clock Mode:** Off / Hybrid / Gene Shift / Time Stretch. Gene Shift: every tick jumps to the next gene. Time Stretch: the clock
   sets how long one trip through the splice takes, the pitch stays Vari-Speed's. Hybrid: Gene Shift while Morph is at 2/1 or lower,
