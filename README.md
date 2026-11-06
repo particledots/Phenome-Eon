@@ -6,8 +6,8 @@ slices ("genes") at any speed, forwards or backwards. All DSP is our own code; i
 anything, and it is not affiliated with Make Noise.
 
 **Status: version 1.0.0 (milestone 11: polish, CPU and long-session checks, README).** Built and checked
-automatically; **not yet tested in Logic.** Milestones 1 to 10 (everything in the plugin) were each tested in Logic on
-both test Macs and work. This README is updated once version 1.0.0 has been tested.
+automatically, and **tested in Logic on both test Macs (M4 Mac mini and Intel Mac): it works.** Milestones 1 to 10
+were each tested in Logic on both Macs and work too.
 
 ## First five minutes
 
@@ -69,8 +69,8 @@ is done by hand on the real Macs.
 - **Long-session test** (`engine/tests/stress_test.cpp`): simulated audio run faster than real time, with the controls and every button used at random the whole time (including saves, loads, sample-rate changes between 44.1, 48 and 88.2 kHz, buffers from 1 to 65,536 samples, loud and not-a-number input). Two runs of 24 hours, one stereo and one mono, plus several shorter ones, all passed: the output and the reel stayed real numbers, the output never ran away, and memory use stayed level (it moves between about 310 and 440 MB as the sample rate changes, with no upward trend). Five more hours of the same test under a memory-error checker found no errors.
 - **CPU:** on the Linux test computer the engine used 0.15% of one processor core for a plain loop and at most about 0.7% with everything switched on at once (full reel, four genes, random pitch-ups, smooth windows, Time Stretch, recording over the reel). Big edits (Erase, Undo, Save, Load) are done a little at a time sized to the buffer, so no single block uses more than about a quarter of its own time even at a 32-sample buffer. These numbers come from a Linux computer, not from the M4 or the Intel Mac.
 - **Plugin side (preview tool, 392 checks):** all 32 control ids present and unchanged, every control surviving save and reload, the window opened and closed 80 times at different sizes while audio ran, older projects opening with the new features Off, mono, and both windows drawing correctly.
-- **Apple's validator and pluginval:** the build runs `auval` and `pluginval` (strictness level 5, AU and VST3) on every build. Version 0.10.0 passed all of them; the result for 1.0.0 is in the build's log.
-- **Tested in Logic on both Macs** (M4 Mac mini, macOS Tahoe, Logic 11.2.2; Intel Mac, macOS 12.7.8, Logic 10.7.8): milestones 1 to 10. Version 1.0.0 is waiting for its test.
+- **Apple's validator and pluginval:** the build runs `auval` and `pluginval` (strictness level 5, AU and VST3) on every build. Version 1.0.0 passed all of them (the results are in the build's log).
+- **Tested in Logic on both Macs** (M4 Mac mini, macOS Tahoe, Logic 11.2.2; Intel Mac, macOS 12.7.8, Logic 10.7.8): milestones 1 to 11. For version 1.0.0 on both Macs: it installs and the footer reads v1.0.0; an old 0.10.0 project opens and sounds the same; the new Options and Clock wording is clearer; there is no crackle from Erase, Undo, Save or Load at small buffers; a one-hour loop stays at about 7% on Logic's CPU meter with steady memory; and a real Morphagene reel from freesound.org loads with all its splices.
 
 ## What changed in 1.0.0
 
